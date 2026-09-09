@@ -45,6 +45,7 @@ def test_buffer_keys_are_native_ints_after_round_trip():
 
 
 def test_state_round_trips_through_the_operator_pickle_path():
+    """The cheapest possible exactly-once regression test: future numebrs leans on this."""
     st = state_to_tuple(9, -4200, {11: (77, 5), 12: (88, 6)}, 1234)
     revived = pickle.loads(pickle.dumps(st))
     assert tuple_to_parts(revived) == (9, -4200, {11: (77, 5), 12: (88, 6)}, 1234)
@@ -79,20 +80,19 @@ def test_last_seen_ms_tracks_the_max_event_time():
     assert tuple_to_parts(st)[3] == 900, "last_seen_ms is Day 5's TTL input"
 
 
-def test_cross_batch_disorder_is_deferred_today_and_is_day_2s_job():
-    st, out = run(empty_state(), [3])
-    detail = out[-1][2]
-    assert tuple_to_parts(st)[0] == 0
-    assert detail["deferred"] == 1 and detail["deferred_seqs"] == [3]
+def test_cross_batch_disorder_is_now_buffered():
+    st, _ = run(empty_state(), [3])
+    assert tuple_to_parts(st)[0] == 0 and sorted(tuple_to_parts(st)[2]) == [3]
     st, _ = run(st, [2])
     st, _ = run(st, [1])
-    last, bal, _, _ = tuple_to_parts(st)
-    assert (last, bal) == (1, 100), "Day 2 must turn this into (3, 300)"
+    last, bal, buf, _ = tuple_to_parts(st)
+    assert (last, bal, buf) == (3, 300, {}), "Day 1 gave (1, 100); the buffer gives (3, 300)"
 
 
-def test_ordered_stream_defers_nothing():
+def test_ordered_stream_produces_no_integrity_events():
+    """Day 1's `deferred == 0` assertion, restated in Day 2's vocabulary."""
     _, out = run(empty_state(), [1, 2, 3, 4, 5])
-    assert out[-1][2]["deferred"] == 0, "this is the Stage-0 assertion"
+    assert [k for k, _, _ in out] == ["BALANCE"], "this is the Stage-0 assertion"
 
 
 def test_timeout_invocation_with_no_rows_is_survivable():
