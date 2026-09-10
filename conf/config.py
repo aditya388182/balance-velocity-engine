@@ -10,6 +10,26 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "conf" / "engine_config.yml"
 
+_DURATION_RE = re.compile(
+    r"^\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|secs|seconds?|m|min|mins|minutes?|h|hours?|d|days?)\s*$"
+)
+_UNIT_MS = {
+    "ms": 1, "millisecond": 1, "milliseconds": 1,
+    "s": 1000, "sec": 1000, "secs": 1000, "second": 1000, "seconds": 1000,
+    "m": 60_000, "min": 60_000, "mins": 60_000, "minute": 60_000, "minutes": 60_000,
+    "h": 3_600_000, "hour": 3_600_000, "hours": 3_600_000,
+    "d": 86_400_000, "day": 86_400_000, "days": 86_400_000,
+}
+
+
+def duration_ms(text: str) -> int:
+    """'30 seconds' -> 30000. Used by the TTL comparison and the Day-3 timing probe."""
+    m = _DURATION_RE.match(str(text))
+    if not m:
+        raise ValueError(f"unparseable duration: {text!r}")
+    return int(float(m.group(1)) * _UNIT_MS[m.group(2)])
+
+
 # env var -> (dotted path into the config dict, coercion)
 _ENV_OVERRIDES = {
     "P3_MAX_BUFFER_SIZE": ("max_buffer_size", int),
@@ -56,6 +76,8 @@ def _apply_env_overrides(cfg: Dict[str, Any], announce: bool = True) -> Dict[str
         applied.append(f"{dotted}: {before!r} -> {after!r}  (via {env_key})")
     cfg["_env_overrides"] = applied
     if applied and announce and os.environ.get("P3_QUIET_CONFIG") != "1":
+        # Printed on every run so a screenshot of a drill is self-documenting:
+        # you can always see which parameters that run actually used.
         print("[config] environment overrides active:")
         for line in applied:
             print(f"[config]   {line}")
@@ -68,31 +90,28 @@ def load_config(path: str | os.PathLike | None = None, announce: bool = True) ->
     with open(cfg_path, "r") as fh:
         cfg = yaml.safe_load(fh)
     cfg["_config_path"] = str(cfg_path)
-    return _apply_env_overrides(cfg, announce=announce)
+    cfg = _apply_env_overrides(cfg, announce=announce)
+    return _derive(cfg)
+
+
+def _derive(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Pre-parsed millisecond forms of the duration strings.
+
+    The pure sequencer core must not depend on a duration parser, and it must not
+    re-parse a string on every micro-batch. Deriving these once at load time keeps
+    step() taking a plain dict of numbers, which is also what makes it trivial to
+    construct a config in a unit test.
+    """
+    cfg["watermark_delay_ms"] = duration_ms(cfg["watermark_delay"])
+    cfg["trigger_interval_ms"] = duration_ms(cfg["trigger_interval"])
+    cfg["state_ttl_ms"] = duration_ms(cfg["state_ttl"])
+    cfg["gap_realert_ms"] = duration_ms(cfg.get("gap_realert_interval", "60 seconds"))
+    return cfg
 
 
 def checkpoint_path(cfg: Dict[str, Any], query: str = "balance_engine") -> str:
     """f"{checkpoint_root}/{spark_version_tag}/{query}" — built here and nowhere else."""
     return f'{cfg["checkpoint_root"]}/{cfg["spark_version_tag"]}/{query}'
-
-
-_DURATION_RE = re.compile(
-    r"^\s*(\d+(?:\.\d+)?)\s*(ms|milliseconds?|s|sec|secs|seconds?|m|min|mins|minutes?|h|hours?|d|days?)\s*$"
-)
-_UNIT_MS = {
-    "ms": 1, "millisecond": 1, "milliseconds": 1,
-    "s": 1000, "sec": 1000, "secs": 1000, "second": 1000, "seconds": 1000,
-    "m": 60_000, "min": 60_000, "mins": 60_000, "minute": 60_000, "minutes": 60_000,
-    "h": 3_600_000, "hour": 3_600_000, "hours": 3_600_000,
-    "d": 86_400_000, "day": 86_400_000, "days": 86_400_000,
-}
-
-
-def duration_ms(text: str) -> int:
-    m = _DURATION_RE.match(str(text))
-    if not m:
-        raise ValueError(f"unparseable duration: {text!r}")
-    return int(float(m.group(1)) * _UNIT_MS[m.group(2)])
 
 
 CFG = load_config()

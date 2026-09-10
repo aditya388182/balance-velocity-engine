@@ -1,36 +1,27 @@
-# Config for both local testing and prod scale. The logic is identical in 
-# both environments; only the thresholds change.
+#  watermark / trigger 
+watermark_delay: "30 seconds"      
+trigger_interval: "5 seconds"      # production: "15 seconds" (spec range 10-30s)
+                                   # why: shorter trigger tightens gap latency, costs more
+                                   # checkpoint writes to object storage.
 
+#  sequencer 
+max_buffer_size: 1000              
+state_ttl: "120 seconds"          
+gap_policy: "FLAG_AND_CONTINUE"    
+gap_realert_interval: "60 seconds" 
 
-# watermark / trigger 
-watermark_delay: "30 seconds"      # prod: "10 minutes"
-                                   # tuning this is a tradeoff between gap-detection speed and false-positives.
-                                   # total detection latency is roughly watermark + trigger (so ~35s locally, ~10.5m in prod).
-trigger_interval: "5 seconds"      # prod: "15 seconds" (usually 10-30s)
-                                   # shorter interval catches gaps faster but hammers S3 with checkpoint writes.
+#  velocity: native windowed aggregation 
+vel_window: "2 minutes"            # production: "1 hour"
+vel_slide: "30 seconds"            # production: "5 minutes"
+vel_window_long: "10 minutes"      # production: "24 hours"
+vel_slide_long: "1 minute"         # production: "30 minutes"
+vel_limit: 500000                  # minor units (= 5,000.00). production: per-tier limits from risk.
 
-# sequencer 
-max_buffer_size: 1000              # prod: 1000 (kept the same).
-                                   # this limits memory per account to prevent OOMs on bursts.
-state_ttl: "120 seconds"           # prod: "24 hours"
-                                   # evicts idle accounts. MUST be measured in event time (watermark) 
-                                   # so we don't mix clocks.
-gap_policy: "FLAG_AND_CONTINUE"    # prod: depends on the risk team.
-                                   # other option is "HOLD". we just build the switch.
-
-# velocity: native windowed aggregation 
-vel_window: "2 minutes"            # prod: "1 hour"
-vel_slide: "30 seconds"            # prod: "5 minutes"
-vel_window_long: "10 minutes"      # prod: "24 hours"
-vel_slide_long: "1 minute"         # prod: "30 minutes"
-vel_limit: 500000                  # minor units ($5,000). prod uses per-tier limits set by risk.
-
-# checkpoint identity 
+#  checkpoint identity 
 checkpoint_root: "s3a://balance-lake/checkpoints"
-spark_version_tag: "v3.5.1"        # full path gets built in conf/config.py.
-                                   # we need versioned paths from day 1 so spark upgrades don't wipe out state.
+spark_version_tag: "v3.5.1"        
 
-# kafka / registry 
+#  kafka / registry 
 kafka_bootstrap: "localhost:29092"
 schema_registry_url: "http://localhost:8081"
 topics:
@@ -39,9 +30,9 @@ topics:
   dlq: "accounts.dlq"
   integrity: "accounts.integrity"
 
-# object store 
+#  object store 
 s3:
-  endpoint: "http://localhost:9000"     # bump to 9010 if macOS AirPlay is hogging port 9000
+  endpoint: "http://localhost:9000"     
   access_key: "minioadmin"
   secret_key: "minioadmin"
 paths:
@@ -49,15 +40,14 @@ paths:
   integrity: "s3a://balance-lake/integrity_events"
   velocity: "s3a://balance-lake/velocity"
 
-# generator defaults (offline determinism) 
+#  generator defaults (offline determinism) 
 generator:
-  clock_start_ms: 1767225600000    # 2026-01-01T00:00:00Z.
-                                   # keeps offline runs deterministic (wall clocks mess up reproducible tests).
+  clock_start_ms: 1767225600000    # 2026-01-01T00:00:00Z — the fixed epoch for --offline runs.
+                                   # Offline mode must be byte-reproducible; wall clock is not.
 
-# spark runtime (laptop sizing) 
+#  spark runtime (laptop sizing) 
 spark:
-  master: "local[4]"               # prod: yarn or k8s cluster
-  shuffle_partitions: 4            # prod: 200+. keep this low locally. 200 RocksDB instances per 
-                                   # operator will instantly choke a laptop.
+  master: "local[4]"              
+  shuffle_partitions: 4            
   driver_memory: "4g"
-  max_offsets_per_trigger: 5000    # caps batch size to keep restart/recovery times predictable
+  max_offsets_per_trigger: 5000    # bounds micro-batch size so recovery replays stay predictable

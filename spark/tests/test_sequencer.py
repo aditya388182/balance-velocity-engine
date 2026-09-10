@@ -267,6 +267,57 @@ def test_engine_equals_oracle_on_random_shuffled_and_duplicated_streams(trial):
     assert dup_seen == set(o["expected_dup_dropped"])
 
 
+def test_matrix_gap_one_range_and_flag_and_continue_excludes_the_missing_amount():
+    """[1,2,4,5] + timeout -> one GAP range (3,3); balance excludes seq 3."""
+    from spark.tests.harness import run_stream
+    cfg = dict(CFG, watermark_delay_ms=1000, gap_realert_ms=60_000)
+    events = [{"seq_no": s, "amount_minor": 100, "event_ts_ms": 10_000 + s * 100}
+              for s in [1, 2, 4, 5]]
+    st, rec = run_stream(events, cfg, batch_size=1, trailing_idle_batches=10,
+                         idle_event_time_step_ms=1000)
+    last, bal, buf, _ = tuple_to_parts(st)
+    gaps = rec.gaps()
+    assert len(gaps) == 1
+    _b, seq, d = gaps[0]
+    assert seq == 3 and (d["lo"], d["hi"], d["count"]) == (3, 3, 1)
+    assert (last, bal, buf) == (5, 400, {}), "4 events applied, seq 3 excluded"
+
+
+def test_matrix_gap_does_not_fire_before_the_watermark_confirms_it():
+    """Without a timeout invocation nothing alerts — the buffer is still hope, not loss."""
+    st = empty_state()
+    for s in [1, 2, 4, 5]:
+        st, out = feed(st, [s])
+    last, _bal, buf, _ = tuple_to_parts(st)
+    assert last == 2 and sorted(buf) == [4, 5]
+    assert "SEQUENCE_GAP" not in kinds(out), "buffered is not the same as lost"
+
+
+def test_matrix_hold_advances_nothing_and_keeps_buffering():
+    from spark.tests.harness import run_stream
+    cfg = dict(CFG, gap_policy="HOLD", watermark_delay_ms=1000, gap_realert_ms=60_000)
+    events = [{"seq_no": s, "amount_minor": 100, "event_ts_ms": 10_000 + s * 100}
+              for s in [1, 2, 4, 5, 6]]
+    st, rec = run_stream(events, cfg, batch_size=1, trailing_idle_batches=10,
+                         idle_event_time_step_ms=1000)
+    last, bal, buf, _ = tuple_to_parts(st)
+    assert (last, bal) == (2, 200), "nothing after the hole applies"
+    assert sorted(buf) == [4, 5, 6], "successors keep buffering"
+    assert len(rec.gaps()) >= 1
+
+
+def test_matrix_hold_overflows_rather_than_growing_without_bound():
+    from spark.tests.harness import run_stream
+    cfg = dict(CFG, gap_policy="HOLD", max_buffer_size=4,
+               watermark_delay_ms=1000, gap_realert_ms=60_000)
+    events = [{"seq_no": s, "amount_minor": 100, "event_ts_ms": 10_000 + s * 100}
+              for s in range(1, 20) if s != 3]
+    st, rec = run_stream(events, cfg, batch_size=1, trailing_idle_batches=10,
+                         idle_event_time_step_ms=1000)
+    assert len(tuple_to_parts(st)[2]) == 4, "buffer pinned at the cap"
+    assert len(rec.overflows()) > 0, "bounded memory beats unbounded hope"
+
+
 def test_timeout_invocation_with_no_rows_is_survivable():
     st, _ = feed(empty_state(), [1, 2])
     st2, out = step(st, [], CFG, timed_out=True, watermark_ms=999)
@@ -274,11 +325,8 @@ def test_timeout_invocation_with_no_rows_is_survivable():
     assert kinds(out) == [KIND_BALANCE]
 
 
-def test_a_real_gap_still_stalls_today_which_is_day_3s_job():
-    """No SEQUENCE_GAP exists yet, so successors buffer forever. Asserted, not assumed."""
-    st = empty_state()
-    for s in [1, 2, 4, 5]:
-        st, out = feed(st, [s])
-    last, _bal, buf, _ = tuple_to_parts(st)
-    assert last == 2 and sorted(buf) == [4, 5]
-    assert "SEQUENCE_GAP" not in kinds(out)
+def test_the_balance_row_always_carries_the_alarm_for_the_operator():
+    _st, out = feed(empty_state(), [1, 2])
+    assert out[-1][2]["alarm_ts"] is None, "nothing buffered, nothing to wait for"
+    _st, out = feed(empty_state(), [1, 5])
+    assert out[-1][2]["alarm_ts"] is not None, "a hole is open, so an alarm is armed"

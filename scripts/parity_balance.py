@@ -80,6 +80,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Delta balances + integrity vs. oracle")
     p.add_argument("--delivery-log", default=None)
     p.add_argument("--gap-policy", default=None, choices=["FLAG_AND_CONTINUE", "HOLD"])
+    p.add_argument("--expect-gap-ranges", action="store_true",
+                   help="Stage 2: assert the engine's SEQUENCE_GAP ranges equal the oracle's")
     p.add_argument("--expect-empty-buffer", action="store_true",
                    help="Stage 1: assert every account fully drained (buffer_size == 0)")
     p.add_argument("--expect-no-integrity", action="store_true",
@@ -163,6 +165,12 @@ def main() -> None:
             if integ["overflow"] != o_ovf:
                 acct_fail.append(f"BUFFER_OVERFLOW set mismatch "
                                  f"(engine={len(integ['overflow'])} oracle={len(o_ovf)})")
+
+        if args.expect_gap_ranges:
+            o_gaps = {(int(r[0]), int(r[1])) for r in o["expected_gap_ranges"]}
+            if integ["gap_ranges"] != o_gaps:
+                acct_fail.append(f"SEQUENCE_GAP ranges {sorted(integ['gap_ranges'])} "
+                                 f"!= oracle {sorted(o_gaps)}")
 
         if args.expect_empty_buffer and int(e["buffer_size"]) != 0:
             acct_fail.append(f"buffer not drained: buffer_size={e['buffer_size']}")

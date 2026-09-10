@@ -16,6 +16,7 @@ from spark.engine.sequencer import make_sequencer  # noqa: E402
 from spark.engine.sinks import make_foreach_batch  # noqa: E402
 from spark.engine.state import OUTPUT_SCHEMA, STATE_SCHEMA  # noqa: E402
 from spark.utils.avro_deserializer import deserialize_stream  # noqa: E402
+from spark.utils.progress import start_progress_writer  # noqa: E402
 from spark.utils.session import assert_state_store_configured, build_spark  # noqa: E402
 
 PID_FILE = REPO_ROOT / "run" / "engine.pid"
@@ -72,6 +73,10 @@ def main() -> None:
              .option("checkpointLocation", ckpt)
              .trigger(processingTime=CFG["trigger_interval"])
              .start())
+
+    progress_path = REPO_ROOT / "logs" / "progress.jsonl"
+    start_progress_writer(query, str(progress_path), poll_seconds=1.0)
+    print(f"[engine] progress    : {progress_path}")
 
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()))

@@ -1,11 +1,5 @@
 #!/usr/bin/env bash
-# one-command stage choreography.
-#
 #   reset -> start engine -> wait ready -> publish -> drain -> stop engine -> parity
-#
-# Every stage this week is one line and is reproducible from a clean slate.
-# recovery_drill.sh is this script with a SIGKILL wedged into the middle,
-# which is why the readiness-wait and the drain-wait are factored the way they are.
 #
 #   ./scripts/stage_run.sh --gen "--accounts 3 --ordered --rate 30 --duration 60 --seed 7" \
 #                          --parity "--expect-empty-buffer" --drain 45
@@ -16,6 +10,7 @@
 #   --drain   N       seconds to let the engine settle after the generator ends (default 45)
 #   --no-reset        keep the existing lake/topics
 #   --no-parity       stop before parity (mechanism-only exercises, e.g. Block 2.5)
+#   --probe   "..."   run gap_timing_probe.py after parity with these args
 #   --keep-running    leave the engine up after the run
 set -euo pipefail
 
@@ -24,6 +19,8 @@ cd "$REPO_ROOT"
 
 GEN_ARGS=""
 PARITY_ARGS=""
+PROBE_ARGS=""
+RUN_PROBE=0
 DRAIN=45
 DO_RESET=1
 DO_PARITY=1
@@ -33,6 +30,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --gen)          GEN_ARGS="$2"; shift 2 ;;
     --parity)       PARITY_ARGS="$2"; shift 2 ;;
+    --probe)        PROBE_ARGS="$2"; RUN_PROBE=1; shift 2 ;;
     --drain)        DRAIN="$2"; shift 2 ;;
     --no-reset)     DO_RESET=0; shift ;;
     --no-parity)    DO_PARITY=0; shift ;;
@@ -55,9 +53,6 @@ stop_engine () {
   if [[ -f run/engine.pid ]]; then
     local pid; pid="$(cat run/engine.pid)"
     if kill -0 "$pid" 2>/dev/null; then
-      # SIGTERM: a graceful shutdown checkpoints cleanly, which is what you want
-      # BETWEEN stages. future work's drill uses SIGKILL precisely because a clean
-      # shutdown proves nothing about recovery.
       echo "==> stopping engine gracefully (SIGTERM) pid=$pid"
       kill -TERM "$pid" 2>/dev/null || true
       for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
@@ -81,6 +76,9 @@ fi
 echo "==> starting engine"
 rm -f run/engine.pid
 : > logs/engine.log
+# The probe reads logs/progress.jsonl. A stale file from a previous run would let
+# it resolve a batch_id against the wrong timeline, so it is truncated with the log.
+: > logs/progress.jsonl
 nohup python spark/jobs/balance_engine.py > logs/engine.log 2>&1 &
 LAUNCHER=$!
 echo "$LAUNCHER" > run/engine.launcher.pid
@@ -115,15 +113,25 @@ if [[ "$KEEP_RUNNING" -eq 0 ]]; then
   trap - EXIT
 fi
 
+STAGE_OK=1
+
 if [[ "$DO_PARITY" -eq 1 ]]; then
   echo "==> parity"
   # shellcheck disable=SC2086
-  if python scripts/parity_balance.py $PARITY_ARGS; then
-    echo "==> STAGE RESULT: PASS"
-  else
-    echo "==> STAGE RESULT: FAIL" >&2
-    exit 1
-  fi
+  python scripts/parity_balance.py $PARITY_ARGS || STAGE_OK=0
 else
   echo "==> parity skipped (--no-parity)"
+fi
+
+if [[ "$RUN_PROBE" -eq 1 ]]; then
+  echo "==> gap timing probe"
+  # shellcheck disable=SC2086
+  python scripts/gap_timing_probe.py $PROBE_ARGS || STAGE_OK=0
+fi
+
+if [[ "$STAGE_OK" -eq 1 ]]; then
+  echo "==> STAGE RESULT: PASS"
+else
+  echo "==> STAGE RESULT: FAIL" >&2
+  exit 1
 fi
