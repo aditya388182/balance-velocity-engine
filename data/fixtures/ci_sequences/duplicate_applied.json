@@ -1,0 +1,46 @@
+{
+  "name": "duplicate_applied",
+  "description": "A re-delivery of an ALREADY-APPLIED seq. Dropped, balance unmoved, and COUNTED \u2014 never silent.",
+  "config": {
+    "max_buffer_size": 1000,
+    "gap_policy": "FLAG_AND_CONTINUE",
+    "watermark_delay_ms": 30000,
+    "gap_realert_ms": 60000
+  },
+  "amount_per_event": 100,
+  "phases": [
+    {
+      "batch": [
+        1
+      ]
+    },
+    {
+      "batch": [
+        2
+      ]
+    },
+    {
+      "batch": [
+        3
+      ]
+    },
+    {
+      "batch": [
+        2
+      ]
+    }
+  ],
+  "expect": {
+    "last_applied_seq": 3,
+    "balance_minor": 300,
+    "buffer": [],
+    "DUP_DROPPED": [
+      2
+    ],
+    "BUFFER_OVERFLOW": [],
+    "SEQUENCE_GAP": [],
+    "dup_paths": {
+      "2": "applied"
+    }
+  }
+}

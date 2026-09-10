@@ -1,0 +1,46 @@
+{
+  "name": "duplicate_buffered",
+  "description": "A re-delivery of a STILL-BUFFERED seq. The naive `seq <= last` dedup misses this case entirely: 3 is not <= last, it is sitting in the buffer. Must not double-insert, and must apply exactly once on drain \u2014 300, not 400.",
+  "config": {
+    "max_buffer_size": 1000,
+    "gap_policy": "FLAG_AND_CONTINUE",
+    "watermark_delay_ms": 30000,
+    "gap_realert_ms": 60000
+  },
+  "amount_per_event": 100,
+  "phases": [
+    {
+      "batch": [
+        1
+      ]
+    },
+    {
+      "batch": [
+        3
+      ]
+    },
+    {
+      "batch": [
+        3
+      ]
+    },
+    {
+      "batch": [
+        2
+      ]
+    }
+  ],
+  "expect": {
+    "last_applied_seq": 3,
+    "balance_minor": 300,
+    "buffer": [],
+    "DUP_DROPPED": [
+      3
+    ],
+    "BUFFER_OVERFLOW": [],
+    "SEQUENCE_GAP": [],
+    "dup_paths": {
+      "3": "buffered"
+    }
+  }
+}

@@ -39,14 +39,6 @@ def run_stream(events: Iterable[Dict[str, Any]], cfg: Dict[str, Any],
                *, batch_size: int = 50, watermark_delay_ms: int | None = None,
                trailing_idle_batches: int = 0,
                idle_event_time_step_ms: int = 0) -> Tuple[tuple, Recorder]:
-    """Drive step() over a delivery order, modelling watermark and timeouts.
-
-    trailing_idle_batches / idle_event_time_step_ms model the heartbeat account:
-    batches with no rows for THIS key, but where event time keeps advancing
-    because other traffic exists. Without them a timeout can never fire after the
-    stream ends — which is exactly the real-world failure the --heartbeat-account
-    flag exists to avoid, so the harness reproduces it rather than papering over it.
-    """
     events = list(events)
     if watermark_delay_ms is None:
         watermark_delay_ms = int(cfg["watermark_delay_ms"])
@@ -104,6 +96,85 @@ def run_stream(events: Iterable[Dict[str, Any]], cfg: Dict[str, Any],
         batch_id += 1
 
     return state, rec
+
+
+def run_stream_with_crash(events, cfg, *, crash_before_batch: int,
+                          batch_size: int = 50, watermark_delay_ms: int | None = None,
+                          trailing_idle_batches: int = 0,
+                          idle_event_time_step_ms: int = 0):
+    import copy
+    import pickle
+
+    events = list(events)
+    if watermark_delay_ms is None:
+        watermark_delay_ms = int(cfg["watermark_delay_ms"])
+
+    chunks = [events[i:i + batch_size] for i in range(0, len(events), batch_size)] or [[]]
+    chunks += [[] for _ in range(trailing_idle_batches)]
+    if not 0 <= crash_before_batch < len(chunks):
+        raise ValueError(f"crash_before_batch {crash_before_batch} out of range "
+                         f"(0..{len(chunks) - 1})")
+
+    state = empty_state()
+    rec = Recorder()
+    lost = Recorder()          # what the doomed attempt emitted to the sink
+    max_event_ts = 0
+    watermark = 0
+    armed: Optional[int] = None
+    batch_id = 0
+    checkpoint: Optional[bytes] = None
+    checkpoint_meta = None
+
+    def invoke(rows, timed_out, into: Recorder):
+        nonlocal state, armed
+        state, outputs = step(state, rows, cfg, timed_out=timed_out, watermark_ms=watermark)
+        for kind, seq, detail in outputs:
+            if kind == KIND_BALANCE:
+                armed = detail.get("alarm_ts")
+            else:
+                into.outputs.append((batch_id, kind, seq, detail))
+
+    def run_batch(chunk, into: Recorder):
+        nonlocal max_event_ts, watermark, batch_id
+        fired = armed is not None and armed <= watermark
+        if fired:
+            invoke([], True, into)
+        if chunk:
+            invoke(chunk, False, into)
+        last, bal, buf, _seen = tuple_to_parts(state)
+        into.batches.append({
+            "batch_id": batch_id, "watermark_ms": watermark, "num_rows": len(chunk),
+            "timed_out": fired, "last_applied_seq": last, "balance_minor": bal,
+            "buffer_size": len(buf), "armed_alarm_ts": armed,
+        })
+
+    for idx, chunk in enumerate(chunks):
+        if idx == crash_before_batch:
+            #  the checkpoint state as of the END of batch idx-1 
+            checkpoint = pickle.dumps(state)
+            checkpoint_meta = (max_event_ts, watermark, armed, batch_id)
+
+            #  the doomed attempt: batch idx runs, its sink writes, then SIGKILL
+            saved_state = copy.deepcopy(state)
+            run_batch(chunk, lost)
+            state = saved_state
+
+            #  restart: state rolls back to the checkpoint, offsets roll back too
+            state = pickle.loads(checkpoint)
+            max_event_ts, watermark, armed, batch_id = checkpoint_meta
+            # batch idx is re-read from offsets/idx and re-executed
+            run_batch(chunk, rec)
+        else:
+            run_batch(chunk, rec)
+
+        for e in chunk:
+            max_event_ts = max(max_event_ts, int(e["event_ts_ms"]))
+        if not chunk and idle_event_time_step_ms:
+            max_event_ts += idle_event_time_step_ms
+        watermark = max(watermark, max_event_ts - watermark_delay_ms)
+        batch_id += 1
+
+    return state, rec, lost
 
 
 def events_from_delivery_log(rows: Iterable[Dict[str, Any]], account_id: str

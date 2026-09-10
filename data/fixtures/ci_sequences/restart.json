@@ -1,0 +1,45 @@
+{
+  "name": "restart",
+  "description": "The cheapest possible exactly-once regression test. State is round-tripped through the SAME pickle path the real operator uses, then [2,3] are replayed. They must be dropped, 4 must still apply, and the balance must be 400 \u2014 not 600. Day 6's red-CI demo breaks precisely this test by deleting the DUP_DROPPED branch.",
+  "config": {
+    "max_buffer_size": 1000,
+    "gap_policy": "FLAG_AND_CONTINUE",
+    "watermark_delay_ms": 30000,
+    "gap_realert_ms": 60000
+  },
+  "amount_per_event": 100,
+  "phases": [
+    {
+      "batch": [
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "restart": true
+    },
+    {
+      "batch": [
+        2,
+        3
+      ]
+    },
+    {
+      "batch": [
+        4
+      ]
+    }
+  ],
+  "expect": {
+    "last_applied_seq": 4,
+    "balance_minor": 400,
+    "buffer": [],
+    "DUP_DROPPED": [
+      2,
+      3
+    ],
+    "BUFFER_OVERFLOW": [],
+    "SEQUENCE_GAP": []
+  }
+}
