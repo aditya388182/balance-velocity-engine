@@ -92,6 +92,21 @@ def dedup_gaps(gaps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                                                 g["_detail"].get("lo") or 0))
 
 
+def _gaps_expected_by_the_delivery_log() -> int | None:
+    """How many gap ranges the newest delivery log implies. None if there is no log."""
+    import glob
+    logs = sorted(glob.glob(str(REPO_ROOT / "delivery_log_*.jsonl")),
+                  key=lambda p: Path(p).stat().st_mtime)
+    if not logs:
+        return None
+    try:
+        from scripts.oracle import compute_oracle, read_delivery_log
+        oracle = compute_oracle(read_delivery_log(logs[-1]))
+        return sum(len(o["expected_gap_ranges"]) for o in oracle.values())
+    except Exception:
+        return None
+
+
 def first_eligible_batch(progress: List[Dict[str, Any]], alarm_ts: int) -> Optional[int]:
     for row in progress:
         wm = row.get("watermark_ms")
@@ -181,6 +196,26 @@ def main() -> None:
 
     #  the three-way property 
     if not gaps:
+        # Zero signals has three very different causes and the caller needs to know
+        # which one. Guessing costs an hour; reading the delivery log costs nothing.
+        print(f"{RED}no SEQUENCE_GAP signals on {topic}{RESET}")
+        expected = _gaps_expected_by_the_delivery_log()
+        if expected is None:
+            print(f"  {DIM}no delivery_log_*.jsonl to check against.{RESET}")
+        elif expected == 0:
+            print(f"  {YELLOW}CAUSE: this run's delivery log withholds NO sequence, so no "
+                  f"gap CAN fire.{RESET}")
+            print(f"  {DIM}--expect-gaps asserts something the run was incapable of "
+                  f"producing. Run the probe against a --gap stream, or drop the "
+                  f"assertion.{RESET}")
+        else:
+            print(f"  {YELLOW}CAUSE: the delivery log DOES withhold {expected} "
+                  f"sequence(s), so the gap should have fired.{RESET}")
+            print(f"  {DIM}Check, in order:")
+            print(f"    1. was the topic wiped after the run? reset_lake.sh DELETES topics")
+            print(f"    2. did event time keep advancing? --heartbeat-account is required")
+            print(f"    3. was the drain long enough for watermark + trigger to elapse?")
+            print(f"    4. scripts/diagnose.py prints all three in one pass{RESET}")
         failures.append("NOT-NEVER violated: no SEQUENCE_GAP signal at all")
         _finish(failures)
 

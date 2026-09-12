@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any, Dict
 
 from delta.tables import DeltaTable
@@ -13,6 +15,8 @@ KIND_GAP = "SEQUENCE_GAP"
 KIND_TTL = "TTL_FLUSH"
 
 BALANCE_KINDS = (KIND_BALANCE, KIND_TTL)
+SINK_FAIL_ONCE = os.environ.get("P3_SINK_FAIL_ONCE") == "1"
+SINK_FAIL_MARKER = Path(os.environ.get("P3_SINK_FAIL_MARKER", "run/sink_failed_once"))
 
 
 def _write_kafka(df: DataFrame, bootstrap: str, topic: str) -> None:
@@ -42,7 +46,7 @@ def make_foreach_batch(cfg: Dict[str, Any]):
             if batch_df.isEmpty():
                 return
 
-            #   balances: seq-guarded MERGE 
+            #  1. balances: seq-guarded MERGE 
             balance_rows = batch_df.filter(F.col("out_kind").isin(list(BALANCE_KINDS)))
             if not balance_rows.isEmpty():
                 # The operator emits one row per key per batch, so a second row
@@ -69,7 +73,7 @@ def make_foreach_batch(cfg: Dict[str, Any]):
                         .whenNotMatchedInsertAll()
                         .execute())
 
-            #   integrity events 
+            #  2. integrity events 
             integrity_rows = batch_df.filter(~F.col("out_kind").isin(list(BALANCE_KINDS)))
             if integrity_rows.isEmpty():
                 return
@@ -99,7 +103,22 @@ def make_foreach_batch(cfg: Dict[str, Any]):
             finally:
                 integrity.unpersist()
 
+            _maybe_fail_once(batch_id)
+
         finally:
             batch_df.unpersist()
 
     return write_batch
+
+
+def _maybe_fail_once(batch_id: int) -> None:
+    """Raise after the writes have landed, once, when the drill asks for it."""
+    if not SINK_FAIL_ONCE or SINK_FAIL_MARKER.exists():
+        return
+    SINK_FAIL_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    SINK_FAIL_MARKER.write_text(str(batch_id))
+    raise RuntimeError(
+        f"P3_SINK_FAIL_ONCE: deliberate failure AFTER the sink wrote batch {batch_id}. "
+        f"The restart must re-execute this batch; the strict-> MERGE guard should make "
+        f"the balances update a no-op, and the append-only integrity table should show "
+        f"the same (kind, seq_no, batch_id) rows twice.")
