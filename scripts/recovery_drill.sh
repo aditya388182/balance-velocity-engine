@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# Flags:
+#   --gen        "..."  generator args (required)
+#   --parity     "..."  extra parity args
+#   --kill-after N      seconds after publishing starts before the SIGKILL (default 25)
+#   --drain      N      seconds to settle after restart (default 60)
+#   --attempts   N      retry the whole drill until a SINK replay is observed (default 1)
+#   --no-reset          keep the existing lake/topics
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -53,7 +60,17 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   : > logs/engine.log; : > logs/progress.jsonl
 
   echo "==> start engine (lifetime 1)"; start_engine
-  sleep 8
+
+  echo "==> waiting for the first committed batch"
+  for _ in $(seq 1 60); do
+    [[ -s logs/progress.jsonl ]] && break
+    sleep 2
+  done
+  if [[ -s logs/progress.jsonl ]]; then
+    echo "    first batch committed"
+  else
+    echo "    WARNING: no batch committed within 120s — the kill may land too early"
+  fi
 
   echo "==> publish (background): $GEN_ARGS"
   # shellcheck disable=SC2086

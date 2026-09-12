@@ -70,6 +70,22 @@ def main() -> None:
         print(f"three no-double-apply layers just earned its rent.{RESET}")
         sys.exit(0)
 
+    if not rows:
+        print(f"{RED}SINK REPLAY IS UNDETECTABLE FOR THIS RUN{RESET} — the integrity "
+              f"table is EMPTY.")
+        print()
+        print(f"{DIM}This detector works by finding the same (account, kind, seq_no,")
+        print(f"batch_id) written more than once. A stream with no duplicates, no gaps")
+        print(f"and no overflow produces no integrity rows at all, so there is nothing")
+        print(f"that CAN be written twice — the answer would be 'not observed' even if")
+        print(f"every batch had replayed.")
+        print()
+        print(f"Re-run the drill with duplicates in the stream so the replayed batch has")
+        print(f"something to write, e.g. add:")
+        print(f"    --dup 100 --dup 200 --dup 300 --dup 400 --dup 500 --dup 600")
+        print(f"to the generator args.{RESET}")
+        sys.exit(1 if args.require_sink_replay else 0)
+
     print(f"{YELLOW}NO SINK REPLAY OBSERVED{RESET} — no batch wrote the same integrity "
           f"row twice.")
     print()

@@ -12,13 +12,11 @@ from typing import List, Tuple
 GREEN, RED, YELLOW, DIM, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[2m", "\033[0m"
 
 
-def rss_kb(pid: int) -> int | None:
-    """RSS in KiB. /proc where available, ps elsewhere (macOS)."""
+def _one_rss_kb(pid: int) -> int | None:
     statm = Path(f"/proc/{pid}/statm")
     if statm.exists():
         try:
-            pages = int(statm.read_text().split()[1])
-            return pages * 4          # 4 KiB pages
+            return int(statm.read_text().split()[1]) * 4      # 4 KiB pages
         except Exception:
             return None
     try:
@@ -30,7 +28,42 @@ def rss_kb(pid: int) -> int | None:
         return None
 
 
-def sample(pid: int, out_path: str, interval: float, duration: float | None) -> None:
+def _descendants(pid: int) -> list[int]:
+    """Every child, grandchild and so on of pid."""
+    out, frontier = [], [pid]
+    seen = {pid}
+    while frontier:
+        cur = frontier.pop()
+        try:
+            r = subprocess.run(["pgrep", "-P", str(cur)],
+                               capture_output=True, text=True, timeout=5)
+            kids = [int(x) for x in r.stdout.split() if x.strip().isdigit()]
+        except Exception:
+            kids = []
+        for k in kids:
+            if k not in seen:
+                seen.add(k)
+                out.append(k)
+                frontier.append(k)
+    return out
+
+
+def rss_kb(pid: int, tree: bool = True) -> int | None:
+    base = _one_rss_kb(pid)
+    if base is None:
+        return None
+    if not tree:
+        return base
+    total = base
+    for kid in _descendants(pid):
+        v = _one_rss_kb(kid)
+        if v:
+            total += v
+    return total
+
+
+def sample(pid: int, out_path: str, interval: float, duration: float | None,
+           tree: bool = True) -> None:
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
@@ -41,7 +74,7 @@ def sample(pid: int, out_path: str, interval: float, duration: float | None) -> 
         while True:
             if duration is not None and (time.time() - t0) > duration:
                 break
-            kb = rss_kb(pid)
+            kb = rss_kb(pid, tree=tree)
             if kb is None:
                 print(f"process {pid} is gone after {n} samples", file=sys.stderr)
                 break
@@ -85,6 +118,9 @@ def main() -> None:
     p.add_argument("--pid", type=int)
     p.add_argument("--out", default="logs/rss.csv")
     p.add_argument("--interval", type=float, default=5.0)
+    p.add_argument("--no-tree", dest="tree", action="store_false", default=True,
+                   help="sample only the given pid instead of the whole process tree "
+                        "(the JVM child is where the state store actually lives)")
     p.add_argument("--duration", type=float, default=None)
     p.add_argument("--check", help="assert this CSV stayed flat")
     p.add_argument("--max-growth-mb", type=float, default=250.0)
@@ -92,6 +128,10 @@ def main() -> None:
     args = p.parse_args()
 
     if args.compare:
+        print(f"{YELLOW}note{RESET} RSS is the WEAK instrument for this contrast. A JVM "
+              f"with -Xmx reserves its heap\n     up front, so a few thousand buffered "
+              f"rows may not move it at all. Use\n     scripts/state_growth.py for the "
+              f"state store's own reported size.\n")
         a, b = (summarise(x) for x in args.compare)
         print(f"{'':<22}{'capped':>14}{'uncapped':>14}")
         for k in ("samples", "duration_s", "baseline_mb", "max_mb",
@@ -128,7 +168,7 @@ def main() -> None:
 
     if not args.pid:
         raise SystemExit("--pid is required unless --check or --compare is given")
-    sample(args.pid, args.out, args.interval, args.duration)
+    sample(args.pid, args.out, args.interval, args.duration, tree=args.tree)
 
 
 if __name__ == "__main__":

@@ -120,6 +120,11 @@ def main() -> None:
                    help="negative control 1: a reorder within the watermark must not alert")
     p.add_argument("--expect-false-positives", action="store_true",
                    help="negative control 2: too short a watermark MUST produce gaps")
+    p.add_argument("--after-crash", action="store_true",
+                   help="skip the (c) BOUNDED assertion. After a recovery drill the "
+                        "wall-clock latency spans the outage AND the catch-up backlog, "
+                        "so the bound is not a property of the detector. (a) not-before "
+                        "and (b) not-never still hold and are still checked.")
     p.add_argument("--progress-file", default=str(PROGRESS_FILE))
     args = p.parse_args()
 
@@ -214,7 +219,12 @@ def main() -> None:
         verdicts.append(f"{GREEN}not-never OK{RESET}")
 
         # (c) BOUNDED
-        if latency is None:
+        if args.after_crash:
+            verdicts.append(f"{YELLOW}bound SKIPPED (after-crash){RESET}")
+            if latency is not None:
+                print(f"    {DIM}measured latency {latency} ms includes the outage and "
+                      f"the catch-up backlog{RESET}")
+        elif latency is None:
             verdicts.append(f"{YELLOW}bounded UNMEASURED{RESET} "
                             f"(no progress row for batch {batch})")
         elif latency <= bound_ms:
