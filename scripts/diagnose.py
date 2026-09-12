@@ -47,7 +47,6 @@ def warn(msg: str, fix: str = "") -> None:
         print(f"        {DIM}{fix}{RESET}")
 
 
-
 def latest_log() -> str | None:
     logs = sorted(glob.glob(str(REPO_ROOT / "delivery_log_*.jsonl")),
                   key=lambda p: Path(p).stat().st_mtime)
@@ -254,11 +253,18 @@ def main() -> None:
     p.add_argument("--delivery-log", default=None)
     p.add_argument("--no-kafka", action="store_true")
     p.add_argument("--no-delta", action="store_true")
+    p.add_argument("--max-buffer-size", type=int, default=None,
+                   help="the cap the RUN used, if it differed from the config. Without "
+                        "this the oracle is computed at the CONFIG cap and will disagree "
+                        "with any run started under P3_MAX_BUFFER_SIZE.")
     args = p.parse_args()
 
     print("Project 3 — pipeline diagnostic")
     print("=" * 74)
 
+    if args.max_buffer_size:
+        CFG["max_buffer_size"] = args.max_buffer_size
+        print(f"{YELLOW}using max_buffer_size={args.max_buffer_size} for the oracle{RESET}")
     dl = section_delivery(args.delivery_log or latest_log())
     if not args.no_kafka:
         section_kafka(dl)

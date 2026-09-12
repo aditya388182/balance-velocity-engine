@@ -49,10 +49,6 @@ def make_foreach_batch(cfg: Dict[str, Any]):
             #  1. balances: seq-guarded MERGE 
             balance_rows = batch_df.filter(F.col("out_kind").isin(list(BALANCE_KINDS)))
             if not balance_rows.isEmpty():
-                # The operator emits one row per key per batch, so a second row
-                # for one account cannot occur — but a multi-match Delta MERGE is
-                # a hard failure, and three lines of insurance costs less than
-                # the incident.
                 w = Window.partitionBy("account_id").orderBy(F.col("last_applied_seq").desc())
                 latest = (balance_rows
                           .withColumn("_rn", F.row_number().over(w))
@@ -67,9 +63,10 @@ def make_foreach_batch(cfg: Dict[str, Any]):
                 else:
                     (DeltaTable.forPath(spark, balances_path).alias("t")
                         .merge(latest.alias("s"), "t.account_id = s.account_id")
-                        # strict > : a replayed batch carries the same
-                        # last_applied_seq and is therefore a no-op.
-                        .whenMatchedUpdateAll("s.last_applied_seq > t.last_applied_seq")
+                        .whenMatchedUpdateAll(
+                            "s.last_applied_seq > t.last_applied_seq "
+                            "OR (s.last_applied_seq = t.last_applied_seq "
+                            "    AND s.buffer_size <> t.buffer_size)")
                         .whenNotMatchedInsertAll()
                         .execute())
 
