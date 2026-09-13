@@ -14,7 +14,7 @@ from conf.config import CFG  # noqa: E402
 from scripts.oracle import compute_oracle, read_delivery_log  # noqa: E402
 from spark.utils.session import build_spark  # noqa: E402
 
-GREEN, RED, YELLOW, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
+GREEN, RED, YELLOW, DIM, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[2m", "\033[0m"
 
 KIND_DUP = "DUP_DROPPED"
 KIND_OVERFLOW = "BUFFER_OVERFLOW"
@@ -66,26 +66,50 @@ def read_engine_state(spark):
 
 
 def derive_applied_count(bal_row, integ) -> int:
+    """last_applied_seq minus everything below it that never applied.
+
+    The two exclusion sets OVERLAP and must be UNIONED, not summed. When a burst
+    overflows before its gap is confirmed, the alarm fires with last=0 and the
+    earliest buffered seq far above, so the SEQUENCE_GAP range spans everything
+    below it — including the seqs we ourselves evicted to the DLQ. Those seqs are
+    then in both sets.
+
+    Summing the counts double-subtracts them and produces a NEGATIVE applied count
+    (-8000 on a run where the true answer was 1000). A negative count is arithmetic,
+    not physics, and it made a correct engine look broken.
+    """
     last = int(bal_row["last_applied_seq"])
-    gapped_below = 0
+    never_applied = set()
     for lo, hi in integ.get("gap_ranges", set()):
         lo, hi = int(lo), min(int(hi), last)
         if hi >= lo:
-            gapped_below += hi - lo + 1
-    evicted_below = len([s for s in integ.get("overflow", set()) if s <= last])
-    return last - gapped_below - evicted_below
+            never_applied |= set(range(lo, hi + 1))
+    never_applied |= {int(s) for s in integ.get("overflow", set()) if int(s) <= last}
+    return last - len(never_applied)
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Delta balances + integrity vs. oracle")
     p.add_argument("--delivery-log", default=None)
     p.add_argument("--gap-policy", default=None, choices=["FLAG_AND_CONTINUE", "HOLD"])
+    p.add_argument("--only-account", action="append", default=None,
+                   help="compare only these accounts. A run that also published tick or "
+                        "heartbeat traffic under a SEPARATE delivery log will otherwise "
+                        "report those accounts as 'the oracle never saw' — true, and "
+                        "not a defect.")
+    p.add_argument("--strict", action="store_true",
+                   help="fail on accounts the oracle marks INDETERMINATE instead of "
+                        "reporting them as uncomparable")
     p.add_argument("--expect-gap-ranges", action="store_true",
                    help="Stage 2: assert the engine's SEQUENCE_GAP ranges equal the oracle's")
     p.add_argument("--expect-empty-buffer", action="store_true",
                    help="Stage 1: assert every account fully drained (buffer_size == 0)")
     p.add_argument("--expect-no-integrity", action="store_true",
                    help="Stage 1 shuffle run: nothing was lost, only late")
+    # Day 1's flag. The `deferred` counter it referred to was a Day-1 scaffold that
+    # branches 2-4 have now claimed, so the equivalent assertion is "no integrity
+    # events at all". Accepted as an alias so every command in the Day 1 plan still
+    # runs against Day 2 code.
     p.add_argument("--expect-zero-deferred", action="store_true",
                    help="Day 1 alias for --expect-no-integrity")
     p.add_argument("--save-state", default=None,
@@ -120,9 +144,13 @@ def main() -> None:
 
     failures = []
     snapshot = {}
+    indeterminate = []
     empty_integ = {"dup": set(), "overflow": set(), "gap_ranges": set(), "dup_paths": {}}
 
+    scope = set(args.only_account) if args.only_account else None
     for acct in sorted(set(oracle) | set(balances)):
+        if scope and acct not in scope:
+            continue
         o = oracle.get(acct)
         e = balances.get(acct)
         integ = integrity.get(acct, empty_integ)
@@ -143,6 +171,26 @@ def main() -> None:
 
         e_applied = derive_applied_count(e, integ)
         acct_fail = []
+
+        # The oracle is order-independent BY DESIGN — that is what keeps it honest.
+        # When it reports overflow as indeterminate it is telling you the outcome
+        # depends on arrival order, and its balance and applied-count are computed on
+        # a "nothing was evicted" assumption that the run may have violated. Comparing
+        # them anyway turns the oracle's own admission of uncertainty into a FAIL.
+        if not o["overflow_determinate"] and not args.strict:
+            indeterminate.append(acct)
+            print(f"{acct:<12}{o['expected_balance_minor']:>16}{e['balance_minor']:>16}"
+                  f"{o['expected_last_applied_seq']:>8}{e['last_applied_seq']:>8}"
+                  f"{o['applied_count']:>8}{e_applied:>8}{e['buffer_size']:>6}"
+                  f"{len(integ['dup']):>6}{len(integ['overflow']):>6}   {YELLOW}N/A{RESET}")
+            snapshot[acct] = {
+                "balance_minor": int(e["balance_minor"]),
+                "last_applied_seq": int(e["last_applied_seq"]),
+                "applied_count": int(e_applied),
+                "buffer_size": int(e["buffer_size"]),
+                "dup": sorted(integ["dup"]), "overflow": sorted(integ["overflow"]),
+            }
+            continue
 
         if e["balance_minor"] != o["expected_balance_minor"]:
             acct_fail.append(
@@ -204,6 +252,17 @@ def main() -> None:
     if dup_paths:
         print("duplicate drop paths exercised: "
               + ", ".join(f"{k}={v}" for k, v in sorted(dup_paths.items())))
+
+    if indeterminate:
+        print()
+        print(f"{YELLOW}{len(indeterminate)} account(s) UNCOMPARABLE{RESET}: "
+              f"{', '.join(indeterminate)}")
+        print(f"  {DIM}The oracle marked overflow indeterminate for these. That happens "
+              f"when a burst larger than the cap has an APPLIABLE head, so which events")
+        print(f"  survive depends on arrival order and micro-batch boundaries — something "
+              f"no order-independent model can predict from a delivery log alone.")
+        print(f"  Assert these with scripts/late_arrival_proof.py or "
+              f"scripts/buffer_proof.py instead, or pass --strict to compare anyway.{RESET}")
 
     if args.save_state:
         with open(args.save_state, "w") as fh:

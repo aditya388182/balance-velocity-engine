@@ -15,6 +15,20 @@ KIND_GAP = "SEQUENCE_GAP"
 KIND_TTL = "TTL_FLUSH"
 
 BALANCE_KINDS = (KIND_BALANCE, KIND_TTL)
+
+# --- deterministic chaos knob for the sink-replay drill (Day 4) --------------
+# Catching a foreachBatch re-run with a SIGKILL is a lottery with terrible odds:
+# commits/N is written immediately after foreachBatch returns, so the window in
+# which the writes have landed but the batch is uncommitted is MILLISECONDS wide.
+# Three attempts found it zero times, which is the expected result.
+#
+# P3_SINK_FAIL_ONCE=1 makes the sink complete all of its writes and then raise,
+# exactly once per marker file. The query dies with the batch uncommitted; the
+# restart re-executes it from offsets/N and writes the same rows again. That is
+# precisely the scenario the strict-> MERGE guard and the append-only integrity
+# table exist for, produced on demand instead of hoped for.
+#
+# Same discipline as Day 6's corrupt_checkpoint.sh: manufacture the disaster.
 SINK_FAIL_ONCE = os.environ.get("P3_SINK_FAIL_ONCE") == "1"
 SINK_FAIL_MARKER = Path(os.environ.get("P3_SINK_FAIL_MARKER", "run/sink_failed_once"))
 
@@ -46,9 +60,13 @@ def make_foreach_batch(cfg: Dict[str, Any]):
             if batch_df.isEmpty():
                 return
 
-            #  1. balances: seq-guarded MERGE 
+            # ---------------- 1. balances: seq-guarded MERGE -----------------
             balance_rows = batch_df.filter(F.col("out_kind").isin(list(BALANCE_KINDS)))
             if not balance_rows.isEmpty():
+                # The operator emits one row per key per batch, so a second row
+                # for one account cannot occur — but a multi-match Delta MERGE is
+                # a hard failure, and three lines of insurance costs less than
+                # the incident.
                 w = Window.partitionBy("account_id").orderBy(F.col("last_applied_seq").desc())
                 latest = (balance_rows
                           .withColumn("_rn", F.row_number().over(w))
@@ -63,6 +81,22 @@ def make_foreach_batch(cfg: Dict[str, Any]):
                 else:
                     (DeltaTable.forPath(spark, balances_path).alias("t")
                         .merge(latest.alias("s"), "t.account_id = s.account_id")
+                        # strict > : a replayed batch carries the same
+                        # last_applied_seq and is therefore a no-op.
+                        #
+                        # The second clause exists because the strict > alone froze the
+                        # OBSERVABILITY columns whenever an account stalled. A hot
+                        # account buffering behind a hole does not advance
+                        # last_applied_seq, so buffer_size stayed at whatever the first
+                        # write happened to see — a 10,000-event burst read back as
+                        # 5,000 because that was the value in batch 1. Precisely when an
+                        # account is in trouble, the number describing the trouble stopped
+                        # updating.
+                        #
+                        # Equal seq AND a changed buffer is still idempotent: a replayed
+                        # batch reproduces identical state, so s.buffer_size =
+                        # t.buffer_size and this clause is a no-op on replay. It fires
+                        # only when the buffer genuinely moved while the ledger did not.
                         .whenMatchedUpdateAll(
                             "s.last_applied_seq > t.last_applied_seq "
                             "OR (s.last_applied_seq = t.last_applied_seq "
@@ -70,7 +104,7 @@ def make_foreach_batch(cfg: Dict[str, Any]):
                         .whenNotMatchedInsertAll()
                         .execute())
 
-            #  2. integrity events 
+            # ---------------- 2. integrity events ----------------------------
             integrity_rows = batch_df.filter(~F.col("out_kind").isin(list(BALANCE_KINDS)))
             if integrity_rows.isEmpty():
                 return

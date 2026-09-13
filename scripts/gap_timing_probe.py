@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from __future__ import annotations
+rom __future__ import annotations
 
 import argparse
 import json
@@ -162,7 +162,7 @@ def main() -> None:
 
     failures: List[str] = []
 
-    #  negative control 1 
+    # ---- negative control 1 ------------------------------------------------
     if args.expect_no_gaps:
         if gaps:
             for g in gaps:
@@ -176,7 +176,7 @@ def main() -> None:
                   f"LATE, not LOST, and produced no alert")
         _finish(failures)
 
-    #  negative control 2 
+    # ---- negative control 2 ------------------------------------------------
     if args.expect_false_positives:
         if not gaps:
             failures.append("expected false positives but saw none — is the "
@@ -194,7 +194,7 @@ def main() -> None:
                   f"exactly those amounts — the cost is money, not noise.{RESET}")
         _finish(failures)
 
-    #  the three-way property 
+    # ---- the three-way property -------------------------------------------
     if not gaps:
         # Zero signals has three very different causes and the caller needs to know
         # which one. Guessing costs an hour; reading the delivery log costs nothing.

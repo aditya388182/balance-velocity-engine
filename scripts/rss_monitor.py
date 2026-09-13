@@ -49,6 +49,20 @@ def _descendants(pid: int) -> list[int]:
 
 
 def rss_kb(pid: int, tree: bool = True) -> int | None:
+    """RSS in KiB for a process, or for the whole process tree.
+
+    TREE IS THE DEFAULT, AND THAT IS THE FIX.
+    run/engine.pid is the PYTHON driver. PySpark launches the JVM as a CHILD
+    process, and the state store, the RocksDB block cache and the entire heap live
+    there. Sampling the Python process alone measures an interpreter holding no
+    data — a perfectly flat ~250 MB on every run, capped or not, which is a
+    measurement of nothing.
+
+    Even summed across the tree, RSS is a weak instrument at laptop scale: a JVM
+    started with -Xmx reserves its heap up front, so buffered rows have to grow
+    into hundreds of megabytes before RSS notices. scripts/state_growth.py reads
+    the state store's own reported size instead, and that is the number to trust.
+    """
     base = _one_rss_kb(pid)
     if base is None:
         return None

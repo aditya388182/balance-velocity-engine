@@ -47,6 +47,8 @@ def warn(msg: str, fix: str = "") -> None:
         print(f"        {DIM}{fix}{RESET}")
 
 
+# --------------------------------------------------------------------------
+
 def latest_log() -> str | None:
     logs = sorted(glob.glob(str(REPO_ROOT / "delivery_log_*.jsonl")),
                   key=lambda p: Path(p).stat().st_mtime)
@@ -82,6 +84,35 @@ def section_delivery(log_path: str | None) -> Dict[str, Any]:
     return {"rows": rows, "oracle": oracle, "path": log_path,
             "expect_gaps": total_gaps, "expect_dups": total_dups,
             "expect_ovf": total_ovf}
+
+
+def _coverage_check(dl, events_on_topic: int) -> None:
+    """The newest delivery log is not always the run's full history.
+
+    Publishing a follow-up event under a new --run-id creates a NEW log. Parity and
+    the oracle then see a FRAGMENT of the account's history and report the engine's
+    entire accumulated state as a mismatch — three accounts "the oracle never saw",
+    a balance off by the whole burst. Every one of those lines is the oracle being
+    blind, not the engine being wrong, and it is worth naming before it sends anyone
+    hunting a phantom.
+    """
+    published = len(dl.get("rows", []))
+    if not published or not events_on_topic:
+        return
+    if published * 4 < events_on_topic:
+        bad(f"the newest delivery log holds {published} event(s) but accounts.events "
+            f"holds {events_on_topic} — you are comparing against a FRAGMENT of this "
+            f"run's history",
+            "a follow-up publish under a new --run-id starts a new log. Use "
+            "--append-to <original log>, or pass --delivery-log with the full one. "
+            f"Available: {_list_logs()}")
+
+
+def _list_logs() -> str:
+    import glob
+    logs = sorted(glob.glob(str(REPO_ROOT / "delivery_log_*.jsonl")),
+                  key=lambda p: Path(p).stat().st_size, reverse=True)
+    return ", ".join(Path(p).name for p in logs[:4]) or "(none)"
 
 
 def count_topic(topic: str, timeout: float = 6.0) -> Dict[str, int]:
@@ -130,6 +161,9 @@ def section_kafka(dl: Dict[str, Any]) -> Dict[str, Any]:
         out[key] = c
         detail = {k: v for k, v in c.items() if k != "__total__"}
         note(f"{topic:<22} {c['__total__']:>7} record(s)  {detail if detail else ''}")
+
+    if dl:
+        _coverage_check(dl, out.get("events", {}).get("__total__", 0))
 
     if dl and out.get("events", {}).get("__total__", 0) == 0 and dl.get("rows"):
         bad("accounts.events is EMPTY but a delivery log exists",
@@ -239,7 +273,13 @@ def section_delta(dl: Dict[str, Any]) -> Dict[str, Any]:
                 bad(f"{acct}: in the delivery log but NOT in the balances table",
                     "the engine never saw it — check the topic and the key")
                 continue
-            if row["balance_minor"] != o["expected_balance_minor"]:
+            if not o["overflow_determinate"]:
+                warn(f"{acct}: the oracle is INDETERMINATE for this run, so its "
+                     f"balance ({o['expected_balance_minor']}) is not comparable",
+                     "a burst larger than the cap with an appliable head — which "
+                     "events survive depends on arrival order. Use buffer_proof.py "
+                     "or late_arrival_proof.py instead.")
+            elif row["balance_minor"] != o["expected_balance_minor"]:
                 bad(f"{acct}: balance {row['balance_minor']} != oracle "
                     f"{o['expected_balance_minor']} "
                     f"(diff {row['balance_minor'] - o['expected_balance_minor']:+d})",

@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# Flags:
-#   --gen        "..."  generator args (required)
-#   --parity     "..."  extra parity args
-#   --kill-after N      seconds after publishing starts before the SIGKILL (default 25)
-#   --drain      N      seconds to settle after restart (default 60)
-#   --attempts   N      retry the whole drill until a SINK replay is observed (default 1)
-#   --no-reset          keep the existing lake/topics
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -60,7 +53,11 @@ for attempt in $(seq 1 "$ATTEMPTS"); do
   : > logs/engine.log; : > logs/progress.jsonl
 
   echo "==> start engine (lifetime 1)"; start_engine
-
+  # Wait for the engine to COMMIT a batch, not merely to exist. The pid file is
+  # written when query.start() returns; the first micro-batch can be a further
+  # 30-60s away on a cold JVM. Publishing before then means the SIGKILL lands
+  # while almost nothing has been consumed, which is why "last committed batch: 0"
+  # keeps appearing and why no replay is ever observed.
   echo "==> waiting for the first committed batch"
   for _ in $(seq 1 60); do
     [[ -s logs/progress.jsonl ]] && break
