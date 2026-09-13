@@ -1,4 +1,21 @@
 #!/usr/bin/env python3
+# scripts/check_install.py
+"""Are the corrected Day-4 files actually on disk, or only some of them?
+
+WHY THIS EXISTS
+---------------
+Three separate drills have now reported FAIL for the same reason: one script was
+the corrected version and another was not. A half-installed bundle does not
+announce itself — the drill runs, prints plausible output, and fails somewhere that
+has nothing to do with the engine. Chasing that costs far more than the five seconds
+this takes.
+
+It checks each file for a MARKER STRING that only the corrected version contains,
+so it detects staleness rather than mere presence. `ls` cannot tell you that
+release_head_drill.sh is the old one; this can.
+
+    python scripts/check_install.py
+"""
 from __future__ import annotations
 
 import sys
@@ -112,7 +129,11 @@ CHECKS = {
         "TTL_FLUSH is in BALANCE_KINDS because",
         "evictions also land in the audit trail, so they are observable"),
     "scripts/wait_for_drain.py": (
-        "A sleep asserts a duration", "condition-based waiting instead of blind sleeps"),
+        "THE THREE SIGNALS, IN ORDER OF AUTHORITY",
+        "drain detection via source offsets / idleness, not unsatisfiable empty batches"),
+    "spark/utils/progress.py#2": (
+        "source_end_offset",
+        "records Kafka offsets so caught-up is the query's own answer"),
     "scripts/stage6_proof.sh#2": (
         "velocity disabled", "the TTL drill isolates its variable"),
     "conf/engine_config.yml": (

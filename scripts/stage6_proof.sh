@@ -1,4 +1,27 @@
 #!/usr/bin/env bash
+# scripts/stage6_proof.sh — Stage 6: TTL eviction and the rejoin round trip.
+#
+#   accounts arrive -> state rows climb -> traffic stops -> event time keeps moving
+#   -> state rows FALL as idle keys are released -> one account returns and its
+#   balance CONTINUES instead of restarting from zero
+#
+# THREE THINGS THE FIRST VERSION GOT WRONG
+# ----------------------------------------
+# 1. It ran velocity alongside. Two extra windowed aggregations over the same
+#    stream on local[4] pushed batches to ~33s against a 5s trigger, so the engine
+#    never caught up: the tick events were never consumed, the watermark never
+#    passed the TTL, and the injected event was never read. Velocity is not under
+#    test here, so it is switched off. Isolating the variable is a measurement
+#    decision, not a production one.
+#
+# 2. It used blind sleeps. A sleep asserts a duration; the drill needs a condition.
+#    Every phase now waits for the query to actually drain, and fails loudly with
+#    the batch durations if it does not.
+#
+# 3. The load was too heavy to observe anything. 1000 accounts x rate 200 says
+#    nothing that 300 x rate 100 does not, and the smaller run finishes.
+#
+#   ./scripts/stage6_proof.sh
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -41,7 +64,11 @@ start_and_wait () {
 }
 
 drain () {
-  python scripts/wait_for_drain.py --query balance_engine --timeout "${1:-300}"
+  # stable-seconds 25 == five triggers of silence. Spark skips a trigger when there
+  # is nothing to do, so silence IS the drained signal; the offset check short-
+  # circuits this whenever the progress file carries source offsets.
+  python scripts/wait_for_drain.py --query balance_engine \
+         --timeout "${1:-300}" --stable-seconds 25
 }
 
 echo "==> reset"

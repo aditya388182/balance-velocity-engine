@@ -1,3 +1,26 @@
+# conf/config.py
+"""Single source of truth for configuration.
+
+This is the ONLY place the effective checkpoint path string is constructed.
+Day 6's format-evolution drill depends on that path having been versioned since
+the very first checkpoint this job ever wrote, so the string is built once, here,
+and every caller asks for it rather than assembling its own.
+
+ENVIRONMENT OVERRIDES
+---------------------
+Several drills this week need the engine run with exactly one tunable changed:
+
+    P3_MAX_BUFFER_SIZE=10                toy cap, to exercise the overflow branch   (Day 2)
+    P3_WATERMARK_DELAY="5 seconds"       negative control: force false positives    (Day 3)
+    P3_GAP_POLICY=HOLD                   the alternative policy                     (Day 3)
+    P3_SPARK_VERSION_TAG=v3.6.0-drill    the upgrade dual-run                       (Day 6)
+
+Overriding through the environment rather than by editing the YAML matters for
+one specific reason: the ENGINE and the ORACLE both read CFG, so a single env var
+keeps them in agreement automatically. Editing the YAML for the engine and then
+passing a CLI flag to the oracle is how you produce a parity failure that is
+really a configuration failure, and lose an hour finding that out.
+"""
 from __future__ import annotations
 
 import os

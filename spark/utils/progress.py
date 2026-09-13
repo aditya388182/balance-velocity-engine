@@ -1,3 +1,26 @@
+# spark/utils/progress.py
+"""Write the streaming query's per-batch progress to logs/progress.jsonl.
+
+WHY THIS EXISTS ON DAY 3
+------------------------
+The gap-timing probe has to answer "what was the watermark when the gap fired?".
+That number lives in query.lastProgress, which only the driver process can see —
+and the probe is a separate process consuming Kafka. Something has to carry the
+watermark across that boundary.
+
+A background thread polling lastProgress is the smallest thing that works. It is
+deliberately chosen over a StreamingQueryListener: the listener API is the right
+long-term shape, but a polling thread has no callback-registration failure mode
+and no risk of a slow callback back-pressuring the query, and on Day 3 the point
+is to measure the engine, not to debug the measuring apparatus.
+
+Day 5's metrics.py pushes these same numbers to the Prometheus pushgateway. The
+field names here are the ones the runbooks will reference, so they are fixed now.
+
+Each line:
+    {"wall_ms", "batch_id", "watermark_ms", "num_input_rows",
+     "state_rows", "state_bytes", "duration_ms", "timestamp"}
+"""
 from __future__ import annotations
 
 import json
@@ -29,7 +52,15 @@ def _parse_watermark(progress: Dict[str, Any]) -> Optional[int]:
 def _extract(progress: Dict[str, Any]) -> Dict[str, Any]:
     ops = progress.get("stateOperators") or []
     op = ops[0] if ops else {}
+    # The AUTHORITATIVE caught-up signal. endOffset is what this batch consumed up
+    # to; latestOffset is what the source had available. Equal means the query has
+    # read everything that existed. Inferring the same thing from "no new batches"
+    # is a guess; this is the query's own answer.
+    srcs = progress.get("sources") or []
+    src = srcs[0] if srcs else {}
     return {
+        "source_end_offset": json.dumps(src.get("endOffset"), sort_keys=True),
+        "source_latest_offset": json.dumps(src.get("latestOffset"), sort_keys=True),
         "wall_ms": int(time.time() * 1000),
         "batch_id": progress.get("batchId"),
         "timestamp": progress.get("timestamp"),

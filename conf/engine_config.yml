@@ -1,54 +1,94 @@
-#  watermark / trigger 
+# conf/engine_config.yml
+# ---------------------------------------------------------------------------
+# Every value carries a demo (this laptop) and a production (at scale) column.
+# The formula never changes; only the constants do. That symmetry is the whole
+# interview answer: "demo X, production Y, same formula."
+# ---------------------------------------------------------------------------
+
+# --- watermark / trigger ---------------------------------------------------
 watermark_delay: "30 seconds"      # production: "10 minutes"
-trigger_interval: "5 seconds"      # production: "15 seconds"
+                                   # why: trades gap-detection latency against false-positive rate.
+                                   # Detection latency is bounded by watermark + trigger in BOTH
+                                   # worlds: ~35s demo, ~10.5 min production. That is Interview Q2.
+trigger_interval: "5 seconds"      # production: "15 seconds" (spec range 10-30s)
+                                   # why: shorter trigger tightens gap latency, costs more
+                                   # checkpoint writes to object storage.
 
-#  sequencer 
-max_buffer_size: 1000              # production: 1000
+# --- sequencer -------------------------------------------------------------
+max_buffer_size: 1000              # production: 1000 — UNCHANGED.
+                                   # why: it is a count, not a duration. Bounded memory per account
+                                   # is a property of the machine, not of the deployment size.
 state_ttl: "120 seconds"           # production: "24 hours"
-gap_policy: "FLAG_AND_CONTINUE"    # Can be changed to HOLD based on business needs.
+                                   # why: idle-account eviction. Measured in EVENT TIME against the
+                                   # watermark, not wall clock — the timeout that enforces it is an
+                                   # event-time timeout, so the two clocks must never be mixed. (Day 5.)
+gap_policy: "FLAG_AND_CONTINUE"    # production: chosen by risk/fraud, not engineering.
+                                   # Alternative: HOLD. Engineering makes it pluggable; the business picks.
 velocity_enabled: true             # production: true
-rejoin_reseed: true                # Re-seed account state after TTL eviction.
+                                   # why: Stage 6 measures TTL eviction, and running two
+                                   # extra windowed aggregations over the same stream turns
+                                   # that into a resource-contention test instead. The
+                                   # stage6 drill sets P3_VELOCITY_ENABLED=0 to isolate the
+                                   # variable under test, which is a measurement decision,
+                                   # not a production one.
+rejoin_reseed: true                # production: true
+                                   # why: after a TTL flush a returning account restarts with
+                                   # EMPTY state at last_applied_seq 0. Without re-seeding the
+                                   # opening balance from Delta, its next event fires a spurious
+                                   # gap, the policy steps over it, and the engine emits a
+                                   # balance computed from zero carrying a HIGHER seq than the
+                                   # stored row — so the strict-> guard overwrites correct truth
+                                   # with a wrong number. TTL eviction is not safe without this.
 gap_realert_interval: "60 seconds" # production: "1 hour"
+                                   # why: under HOLD the gap never resolves itself, so the alarm would
+                                   # re-arm and re-fire every trigger. This bounds the re-assertion
+                                   # cadence. FLAG_AND_CONTINUE never needs it — each firing advances
+                                   # last_applied_seq, so progress is guaranteed.
 
-#  velocity: native windowed aggregation 
+# --- velocity: native windowed aggregation (Day 5) -------------------------
 vel_window: "2 minutes"            # production: "1 hour"
 vel_slide: "30 seconds"            # production: "5 minutes"
 vel_window_long: "10 minutes"      # production: "24 hours"
 vel_slide_long: "1 minute"         # production: "30 minutes"
-vel_limit: 500000                  # Minor units (= 5,000.00); production uses risk-based limits.
+vel_limit: 500000                  # minor units (= 5,000.00). production: per-tier limits from risk.
 
-#  checkpoint identity 
+# --- checkpoint identity ---------------------------------------------------
 checkpoint_root: "s3a://balance-lake/checkpoints"
-spark_version_tag: "v3.5.1"        # Checkpoints are stored under a versioned path.
+spark_version_tag: "v3.5.1"        # the effective checkpoint path is ALWAYS
+                                   # f"{checkpoint_root}/{spark_version_tag}/{query}", built in ONE
+                                   # helper (conf/config.py::checkpoint_path). Day 6's upgrade drill
+                                   # is only honest if the job has used versioned paths since its
+                                   # very first run.
 
-#  kafka / registry 
+# --- kafka / registry ------------------------------------------------------
 kafka_bootstrap: "localhost:29092"
 schema_registry_url: "http://localhost:8081"
-
 topics:
   events: "accounts.events"
   signals: "accounts.signals"
   dlq: "accounts.dlq"
   integrity: "accounts.integrity"
 
-#  object store 
+# --- object store ----------------------------------------------------------
 s3:
-  endpoint: "http://localhost:9000" # Change to 9010 if port 9000 is already in use.
+  endpoint: "http://localhost:9000"     # if macOS AirPlay holds 9000, move MinIO to 9010 and edit here
   access_key: "minioadmin"
   secret_key: "minioadmin"
-
 paths:
   balances: "s3a://balance-lake/balances"
   integrity: "s3a://balance-lake/integrity_events"
   velocity: "s3a://balance-lake/velocity"
 
-#  generator defaults (offline determinism) 
+# --- generator defaults (offline determinism) ------------------------------
 generator:
-  clock_start_ms: 1767225600000    # Fixed start time for reproducible offline runs.
+  clock_start_ms: 1767225600000    # 2026-01-01T00:00:00Z — the fixed epoch for --offline runs.
+                                   # Offline mode must be byte-reproducible; wall clock is not.
 
-#  spark runtime (laptop sizing) 
+# --- spark runtime (laptop sizing) -----------------------------------------
 spark:
   master: "local[4]"               # production: yarn/k8s, 8-12 executors
-  shuffle_partitions: 4             # production: 200+
+  shuffle_partitions: 4            # production: 200+. The default of 200 here means 200 RocksDB
+                                   # state store instances PER stateful operator — on 16 GB that is
+                                   # the difference between a 5-second micro-batch and a hung job.
   driver_memory: "4g"
-  max_offsets_per_trigger: 5000    # Keeps micro-batches and recovery runs manageable.
+  max_offsets_per_trigger: 5000    # bounds micro-batch size so recovery replays stay predictable

@@ -1,4 +1,23 @@
 #!/usr/bin/env python3
+# spark/jobs/balance_engine.py
+"""Main streaming job: Kafka -> Avro decode -> watermark -> sequencer -> Delta.
+
+THE WATERMARK IS DECLARED TODAY EVEN THOUGH NOTHING USES IT UNTIL DAY 3.
+applyInPandasWithState with EventTimeTimeout REQUIRES a watermark on the input
+stream, and adding one later invalidates the checkpoint. Decisions that touch the
+checkpoint's identity — the watermark, the stateful operator layout, the state
+schema, the state store provider — are Day-1 decisions, full stop.
+
+applyInPandasWithState pitfalls, every one of which has cost somebody an afternoon:
+  * Arrow must be enabled (spark.sql.execution.arrow.pyspark.enabled=true).
+  * Output and state schemas are passed EXPLICITLY; a mismatch surfaces as a
+    cryptic java.lang.IllegalStateException from deep inside the Arrow writer,
+    with nothing in the message naming the offending column.
+  * The state tuple order must match STATE_SCHEMA field order exactly — it is
+    positional all the way into RocksDB.
+  * Buffer dict keys must be native Python int, never numpy.int64.
+  * A timed-out invocation receives no rows; the function must work from state alone.
+"""
 from __future__ import annotations
 
 import os
@@ -26,6 +45,12 @@ PID_FILE = REPO_ROOT / "run" / "engine.pid"
 
 
 def ensure_balances_table(spark) -> None:
+    """Create the balances table empty if it does not exist.
+
+    The rejoin re-seed joins against it on every micro-batch, so a missing table
+    would fail the query plan at start rather than on first write. Creating it
+    empty also removes the isDeltaTable branch from the sink's hot path.
+    """
     from delta.tables import DeltaTable
     path = CFG["paths"]["balances"]
     if DeltaTable.isDeltaTable(spark, path):
@@ -71,10 +96,10 @@ def main() -> None:
 
     events = deserialize_stream(raw, CFG["schema_registry_url"])
 
-    #  checkpoint-identity decision: the watermark 
+    # ---- checkpoint-identity decision: the watermark ------------------------
     events = events.withWatermark("event_ts", CFG["watermark_delay"])
 
-    #  velocity: the native path, started BEFORE the sequencer 
+    # ---- velocity: the native path, started BEFORE the sequencer ------------
     # A second query on the same watermarked stream. It shares nothing with the
     # sequencer except its input, which is the point: velocity is order-agnostic
     # and belongs in Spark's windowed aggregation, not in hand-rolled state.
@@ -86,6 +111,14 @@ def main() -> None:
     else:
         vel_queries = []
         print("[engine] velocity    : DISABLED (P3_VELOCITY_ENABLED=0)")
+
+    # ---- rejoin re-seed: a stream-static left join with the balances table ---
+    # A returning account arrives with EMPTY state at seq 0 because TTL released
+    # it. These two columns carry its durable opening balance in on the rows, and
+    # the sequencer seeds from them ONLY when the state is genuinely cold. Without
+    # this, TTL eviction silently corrupts the balance of every account that
+    # comes back.
+    #
     # NOTE: adding this join changes the query plan, so it requires a FRESH
     # checkpoint. That is what the versioned checkpoint path is for, and Day 5
     # runs start from reset_lake anyway.

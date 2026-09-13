@@ -1,3 +1,45 @@
+# spark/engine/sinks.py
+"""foreachBatch sinks: balances, the integrity trail, and the Kafka feeds.
+
+ROUTING BY out_kind
+-------------------
+    BALANCE          -> seq-guarded Delta MERGE into the balances table
+    TTL_FLUSH        -> same MERGE path (Day 5)
+    DUP_DROPPED      -> integrity Delta table + accounts.integrity
+    BUFFER_OVERFLOW  -> integrity table + accounts.integrity + accounts.dlq
+    SEQUENCE_GAP     -> integrity table + accounts.integrity + accounts.signals (Day 3)
+
+WHY THE SEQ GUARD STILL MATTERS WHEN STATE IS CHECKPOINTED
+----------------------------------------------------------
+State and Kafka offsets restore atomically, so the sequencer itself never
+double-applies. But the foreachBatch BODY can still run twice on driver retry —
+that is exactly the lesson Project 1 taught: checkpointing alone does not protect
+foreachBatch. A replayed batch carries the same last_applied_seq, and a strict >
+makes the update a no-op.
+
+Two independent exactly-once layers: the state machine (dedup by seq) and the
+sink (guard by seq). Either alone would be enough, which is the point of having
+both — a replay applies nothing twice even if one layer has a bug.
+
+WHY THE INTEGRITY TABLE IS APPEND-ONLY
+--------------------------------------
+It is an audit trail, so idempotent-append with read-side dedup beats in-place
+mutation: nothing is ever rewritten, and a replayed batch appends visibly
+duplicated rows carrying the same batch_id. Consumers dedup on read by
+(account_id, kind, seq_no). That is an honest design choice, not an oversight,
+and parity_balance.py does exactly that dedup.
+
+A consequence worth stating out loud: duplicate MULTIPLICITY is therefore not
+observable through this table by construction, so parity asserts on the SET of
+dropped seqs and prints counts for information only.
+
+WHY batch_df IS PERSISTED
+-------------------------
+This function takes up to six actions against batch_df. Without persist(), each
+action re-executes the micro-batch plan, and for a stateful operator that means
+re-running the pandas function against the state store. persist/unpersist here is
+correctness, not tuning.
+"""
 from __future__ import annotations
 
 import os
@@ -15,6 +57,20 @@ KIND_GAP = "SEQUENCE_GAP"
 KIND_TTL = "TTL_FLUSH"
 
 BALANCE_KINDS = (KIND_BALANCE, KIND_TTL)
+
+# --- deterministic chaos knob for the sink-replay drill (Day 4) --------------
+# Catching a foreachBatch re-run with a SIGKILL is a lottery with terrible odds:
+# commits/N is written immediately after foreachBatch returns, so the window in
+# which the writes have landed but the batch is uncommitted is MILLISECONDS wide.
+# Three attempts found it zero times, which is the expected result.
+#
+# P3_SINK_FAIL_ONCE=1 makes the sink complete all of its writes and then raise,
+# exactly once per marker file. The query dies with the batch uncommitted; the
+# restart re-executes it from offsets/N and writes the same rows again. That is
+# precisely the scenario the strict-> MERGE guard and the append-only integrity
+# table exist for, produced on demand instead of hoped for.
+#
+# Same discipline as Day 6's corrupt_checkpoint.sh: manufacture the disaster.
 SINK_FAIL_ONCE = os.environ.get("P3_SINK_FAIL_ONCE") == "1"
 SINK_FAIL_MARKER = Path(os.environ.get("P3_SINK_FAIL_MARKER", "run/sink_failed_once"))
 
@@ -46,7 +102,7 @@ def make_foreach_batch(cfg: Dict[str, Any]):
             if batch_df.isEmpty():
                 return
 
-            #  1. balances: seq-guarded MERGE 
+            # ---------------- 1. balances: seq-guarded MERGE -----------------
             balance_rows = batch_df.filter(F.col("out_kind").isin(list(BALANCE_KINDS)))
             if not balance_rows.isEmpty():
                 # The operator emits one row per key per batch, so a second row
@@ -67,6 +123,22 @@ def make_foreach_batch(cfg: Dict[str, Any]):
                 else:
                     (DeltaTable.forPath(spark, balances_path).alias("t")
                         .merge(latest.alias("s"), "t.account_id = s.account_id")
+                        # strict > : a replayed batch carries the same
+                        # last_applied_seq and is therefore a no-op.
+                        #
+                        # The second clause exists because the strict > alone froze the
+                        # OBSERVABILITY columns whenever an account stalled. A hot
+                        # account buffering behind a hole does not advance
+                        # last_applied_seq, so buffer_size stayed at whatever the first
+                        # write happened to see — a 10,000-event burst read back as
+                        # 5,000 because that was the value in batch 1. Precisely when an
+                        # account is in trouble, the number describing the trouble stopped
+                        # updating.
+                        #
+                        # Equal seq AND a changed buffer is still idempotent: a replayed
+                        # batch reproduces identical state, so s.buffer_size =
+                        # t.buffer_size and this clause is a no-op on replay. It fires
+                        # only when the buffer genuinely moved while the ledger did not.
                         .whenMatchedUpdateAll(
                             "s.last_applied_seq > t.last_applied_seq "
                             "OR (s.last_applied_seq = t.last_applied_seq "
@@ -74,7 +146,7 @@ def make_foreach_batch(cfg: Dict[str, Any]):
                         .whenNotMatchedInsertAll()
                         .execute())
 
-            #  1b. metrics 
+            # ---------------- 1b. metrics ------------------------------------
             # buffer p99 and the per-kind counts come from the rows the operator
             # just emitted, which is the only place they exist. Day 6's dashboards
             # read these names; they are fixed here.
@@ -83,6 +155,17 @@ def make_foreach_batch(cfg: Dict[str, Any]):
                 push_batch_metrics(batch_df, batch_id, cfg)
             except Exception:
                 pass   # a broken side-channel is never a reason to stop the money
+
+            # ---------------- 2. integrity events ----------------------------
+            # TTL_FLUSH is in BALANCE_KINDS because it carries a final balance, but
+            # it ALSO belongs in the audit trail: state was released and a balance
+            # was closed, which is exactly the kind of event an operator needs a
+            # record of.
+            #
+            # Routing it only to the MERGE made evictions invisible. A flush carries
+            # the SAME seq and the same buffer_size as the stored row, so neither
+            # clause of the guard fires and nothing is written — the one event
+            # Stage 6 is about left no trace anywhere.
             integrity_rows = batch_df.filter(
                 (~F.col("out_kind").isin(list(BALANCE_KINDS)))
                 | (F.col("out_kind") == KIND_TTL))
