@@ -1,45 +1,4 @@
 #!/usr/bin/env python3
-# scripts/state_growth.py
-"""Measure the STATE STORE, not the process. The correct instrument for Stage 5.
-
-WHY RSS WAS THE WRONG INSTRUMENT
---------------------------------
-Two things made the capped-vs-uncapped RSS contrast unmeasurable on a laptop:
-
-  1. run/engine.pid is the PYTHON driver. PySpark launches the JVM as a child
-     process, and the state store, the RocksDB block cache and the whole heap live
-     in the JVM. Sampling the Python process measures an interpreter holding no
-     data — which is exactly what "251.9 MB baseline, 252.0 MB peak, 0.1 MB growth
-     on both runs" looks like.
-
-  2. Even with the right process, the burst is too small. A 10,000-event burst at
-     cap 1000 versus cap 200000 differs by about 9,000 buffered entries — roughly
-     650 KiB. Next to a JVM heap that is noise. RSS would need a burst three orders
-     of magnitude larger to move.
-
-WHY THIS SCRIPT IS *ALSO* NOT THE STAGE-5 INSTRUMENT
-----------------------------------------------------
-It was written as the fix for the RSS problem and it is still wrong for that job.
-applyInPandasWithState keeps ONE STATE ROW PER GROUPING KEY, and the pending buffer
-is a pickled blob INSIDE that row — so five accounts report five state rows whether
-they hold 1,000 buffered events or 10,000. `memoryUsedBytes` does not help either:
-for the RocksDB provider it is dominated by memtable and block-cache overhead, not
-by the logical size of the values.
-
-Use scripts/buffer_proof.py for Stage 5. It reads `buffer_size` from the balances
-table — the number the mechanism itself emits — and the DLQ record count.
-
-This script remains useful for what it actually measures: how many ACCOUNTS are
-being held in state over time. That is Day 5's TTL curve, where state rows falling
-as idle accounts evict is exactly the thing to watch.
-
-    # after a run
-    python scripts/state_growth.py --check logs/progress_capped.jsonl
-
-    # the contrast
-    python scripts/state_growth.py --compare logs/progress_capped.jsonl \
-                                             logs/progress_uncapped.jsonl
-"""
 from __future__ import annotations
 
 import argparse

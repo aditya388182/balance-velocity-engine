@@ -1,23 +1,4 @@
 #!/usr/bin/env python3
-# spark/jobs/balance_engine.py
-"""Main streaming job: Kafka -> Avro decode -> watermark -> sequencer -> Delta.
-
-THE WATERMARK IS DECLARED TODAY EVEN THOUGH NOTHING USES IT UNTIL DAY 3.
-applyInPandasWithState with EventTimeTimeout REQUIRES a watermark on the input
-stream, and adding one later invalidates the checkpoint. Decisions that touch the
-checkpoint's identity — the watermark, the stateful operator layout, the state
-schema, the state store provider — are Day-1 decisions, full stop.
-
-applyInPandasWithState pitfalls, every one of which has cost somebody an afternoon:
-  * Arrow must be enabled (spark.sql.execution.arrow.pyspark.enabled=true).
-  * Output and state schemas are passed EXPLICITLY; a mismatch surfaces as a
-    cryptic java.lang.IllegalStateException from deep inside the Arrow writer,
-    with nothing in the message naming the offending column.
-  * The state tuple order must match STATE_SCHEMA field order exactly — it is
-    positional all the way into RocksDB.
-  * Buffer dict keys must be native Python int, never numpy.int64.
-  * A timed-out invocation receives no rows; the function must work from state alone.
-"""
 from __future__ import annotations
 
 import os
