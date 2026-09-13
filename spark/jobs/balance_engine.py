@@ -71,10 +71,10 @@ def main() -> None:
 
     events = deserialize_stream(raw, CFG["schema_registry_url"])
 
-    #  checkpoint-identity decision: the watermark 
+    # ---- checkpoint-identity decision: the watermark ------------------------
     events = events.withWatermark("event_ts", CFG["watermark_delay"])
 
-    #  velocity: the native path, started BEFORE the sequencer 
+    # ---- velocity: the native path, started BEFORE the sequencer ------------
     # A second query on the same watermarked stream. It shares nothing with the
     # sequencer except its input, which is the point: velocity is order-agnostic
     # and belongs in Spark's windowed aggregation, not in hand-rolled state.
@@ -83,7 +83,7 @@ def main() -> None:
     for q in vel_queries:
         print(f"[engine] velocity    : {q.name}")
 
-    #  rejoin re-seed: a stream-static left join with the balances table 
+    # ---- rejoin re-seed: a stream-static left join with the balances table ---
     # A returning account arrives with EMPTY state at seq 0 because TTL released
     # it. These two columns carry its durable opening balance in on the rows, and
     # the sequencer seeds from them ONLY when the state is genuinely cold. Without
@@ -117,8 +117,10 @@ def main() -> None:
              .trigger(processingTime=CFG["trigger_interval"])
              .start())
 
+    # Day 3: the timing probe runs in a separate process and cannot read
+    # query.lastProgress, so the watermark per batch is written to a file it can.
     progress_path = REPO_ROOT / "logs" / "progress.jsonl"
-    start_progress_writer(query, str(progress_path), poll_seconds=1.0)
+    start_progress_writer([query] + vel_queries, str(progress_path), poll_seconds=1.0)
     print(f"[engine] progress    : {progress_path}")
 
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)

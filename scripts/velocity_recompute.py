@@ -35,7 +35,7 @@ def main() -> None:
     spark = build_spark(CFG, app_name="velocity-recompute", streaming=True)
     failures = []
     try:
-        #  the batch side: the SAME records, bounded offsets 
+        # ---- the batch side: the SAME records, bounded offsets ----
         raw = (spark.read.format("kafka")
                .option("kafka.bootstrap.servers", CFG["kafka_bootstrap"])
                .option("subscribe", CFG["topics"]["events"])
@@ -48,14 +48,6 @@ def main() -> None:
         print(f"batch events read : {n_events}")
         if n_events == 0:
             print(f"{RED}nothing on the topic — run the engine and generator first{RESET}")
-            sys.exit(1)
-
-        try:
-            stream_all = spark.read.format("delta").load(CFG["paths"]["velocity"])
-        except Exception:
-            print(f"{RED}the velocity Delta table does not exist{RESET}")
-            print(f"  {DIM}the velocity queries never wrote — check logs/engine.log for "
-                  f"'velocity_short' and 'velocity_long'{RESET}")
             sys.exit(1)
 
         kinds = ["short", "long"] if args.window_kind == "both" else [args.window_kind]
@@ -75,25 +67,52 @@ def main() -> None:
                              F.col("window.end").alias("window_end"),
                              "batch_spend", "batch_txns"))
 
+            # one path per window kind: they were concurrent writers to a single
+            # table, which killed whichever query lost the metadata race.
+            vpath = f'{CFG["paths"]["velocity"]}/{which}'
+            try:
+                stream_all = spark.read.format("delta").load(vpath)
+            except Exception:
+                print(f"{RED}no velocity table at {vpath}{RESET}")
+                print(f"  {DIM}query 'velocity_{which}' never wrote. Run "
+                      f"scripts/diagnose_velocity.py — it reads the engine log and "
+                      f"the per-query progress and says whether it died.{RESET}")
+                failures.append(f"{which}: no velocity table")
+                continue
+
             # update mode re-emits a window whenever it changes, so take the LAST
-            # row the stream wrote for each window.
-            w = (Window.partitionBy("account_id", "window_start")
-                 .orderBy(F.col("batch_id").desc()))
+            # row the stream wrote for each window. Order by WRITTEN_AT, not
+            # batch_id: batch_id restarts at 0 on every engine start, so in an
+            # append-only table a "max batch_id" can belong to an earlier run.
+            order_col = (F.col("written_at").desc()
+                         if "written_at" in stream_all.columns
+                         else F.col("batch_id").desc())
+            if "written_at" not in stream_all.columns:
+                print(f"{YELLOW}note{RESET} this table predates written_at; falling "
+                      f"back to batch_id ordering, which cannot separate runs")
+            w = Window.partitionBy("account_id", "window_start").orderBy(order_col)
             stream = (stream_all
-                      .filter(F.col("window_kind") == which)
                       .withColumn("_rn", F.row_number().over(w))
                       .filter(F.col("_rn") == 1)
                       .select("account_id", "window_start", "window_end",
                               F.col("spend_minor").alias("stream_spend"),
                               F.col("txn_count").alias("stream_txns")))
+            n_stream_rows = stream_all.count()
+            runs = (stream_all.select(F.date_trunc("minute", "written_at")).distinct().count()
+                    if "written_at" in stream_all.columns else None)
 
             joined = stream.join(batch, ["account_id", "window_start", "window_end"],
                                  "full_outer")
 
-            # A window is SETTLED once the whole stream has moved past its end.
-            # max(event_ts) is the frontier the engine ever saw.
+            # A window is settled for the STREAM only once its WATERMARK has passed
+            # the window end — not once max(event_ts) has. The watermark trails
+            # max(event_ts) by watermark_delay, so the looser bound marks about one
+            # window's worth as settled that the stream has not finalised, and those
+            # then read as disagreements on a correct engine.
             frontier = events.select(F.max("event_ts")).first()[0]
-            settled = joined.filter(F.col("window_end") <= F.lit(frontier))
+            settle_bound = F.lit(frontier) - F.expr(
+                f"INTERVAL {int(CFG['watermark_delay_ms']) // 1000} SECONDS")
+            settled = joined.filter(F.col("window_end") <= settle_bound)
             open_windows = joined.count() - settled.count()
 
             total = settled.count()
@@ -104,6 +123,8 @@ def main() -> None:
                 | (F.col("stream_txns") != F.col("batch_txns")))
             n_bad = mismatched.count()
 
+            print(f"stream rows       : {n_stream_rows}"
+                  + (f"   written across {runs} distinct minute(s)" if runs else ""))
             print(f"settled windows   : {total}")
             print(f"open windows      : {open_windows}  "
                   f"{DIM}(excluded — a partial sum is not a disagreement){RESET}")
@@ -117,6 +138,17 @@ def main() -> None:
                                 f"stream run past at least one full window")
             if n_bad:
                 mismatched.orderBy("account_id", "window_start").show(10, truncate=False)
+                n_null = mismatched.filter(F.col("stream_spend").isNull()).count()
+                if n_null == n_bad:
+                    print(f"  {YELLOW}every mismatch has stream_spend NULL{RESET} — the "
+                          f"stream wrote NOTHING for these windows, which is a dead or "
+                          f"never-started query rather than a wrong number.")
+                    print(f"  {DIM}run: python scripts/diagnose_velocity.py{RESET}")
+                elif mismatched.filter(F.col("stream_spend") < F.col("batch_spend")).count() == n_bad:
+                    print(f"  {YELLOW}every stream value is LOWER than batch{RESET} — the "
+                          f"query processed only part of the stream, so it died or was "
+                          f"stopped before draining.")
+                    print(f"  {DIM}run: python scripts/diagnose_velocity.py{RESET}")
                 failures.append(f"{which}: {n_bad} settled window(s) disagree")
             else:
                 print(f"{GREEN}EXACT MATCH{RESET} — native windowed aggregation == "

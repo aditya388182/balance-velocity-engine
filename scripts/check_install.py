@@ -63,6 +63,7 @@ CHECKS = {
     "spark/engine/sinks.py#2": (
         "buffer_size <> t.buffer_size",
         "observability columns update while an account is stalled"),
+    # ---- Day 5 ----
     "spark/engine/sequencer.py": (
         "state_ttl_ms",
         "the TTL alarm branch — without it an idle account never times out"),
@@ -93,6 +94,18 @@ CHECKS = {
         "snapshot IS NOT", "the snapshot script Day 6's drills depend on"),
     "airflow/dags/state_snapshot.py": (
         "p3_state_snapshot", "the snapshot DAG"),
+    "spark/engine/velocity.py#2": (
+        "ONE PATH PER WINDOW KIND",
+        "separate Delta paths — the two queries were concurrent writers to one table"),
+    "spark/utils/progress.py": (
+        "query_name",
+        "polls EVERY query, so a dead velocity query is visible"),
+    "scripts/velocity_recompute.py#2": (
+        "watermark_delay_ms",
+        "settled windows bounded by the WATERMARK, not by max(event_ts)"),
+    "scripts/diagnose_velocity.py": (
+        "Which of the velocity failure causes",
+        "the velocity failure discriminator"),
     "docs/native_vs_custom.md": (
         "Tool consolidation beats tool optimisation", "the Staff-signal design doc"),
 }

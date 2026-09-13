@@ -41,9 +41,15 @@ def _extract(progress: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def start_progress_writer(query, path: str = PROGRESS_FILE_DEFAULT,
+def start_progress_writer(query_or_queries, path: str = PROGRESS_FILE_DEFAULT,
                           poll_seconds: float = 1.0) -> threading.Thread:
-    """Poll query.lastProgress and append one JSONL line per NEW batch.
+    """Poll lastProgress for EVERY query and append one JSONL line per new batch.
+
+    It used to poll a single query — the sequencer — which meant the velocity
+    queries had no health signal at all. When one of them died, the only evidence
+    was rows missing from a Delta table two steps downstream, which reads like a
+    windowing bug rather than a dead query. An unobserved query is an unfalsifiable
+    one; each line now carries query_name.
 
     Daemon thread: it must never keep the JVM alive after the query stops, and it
     must never be able to fail the job. Every exception inside the loop is
@@ -53,19 +59,48 @@ def start_progress_writer(query, path: str = PROGRESS_FILE_DEFAULT,
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    queries = (list(query_or_queries)
+               if isinstance(query_or_queries, (list, tuple))
+               else [query_or_queries])
+
     def loop():
         seen = set()
         while True:
             try:
-                if not query.isActive:
+                if not any(q.isActive for q in queries):
                     return
-                progress = query.lastProgress
-                if progress:
-                    batch_id = progress.get("batchId")
-                    if batch_id is not None and batch_id not in seen:
-                        seen.add(batch_id)
+                for q in queries:
+                    name = getattr(q, "name", None) or "unnamed"
+                    try:
+                        if not q.isActive:
+                            # Record the death ONCE. A query that stops while the
+                            # others run is the failure mode that was invisible.
+                            if (name, "STOPPED") not in seen:
+                                seen.add((name, "STOPPED"))
+                                exc = None
+                                try:
+                                    exc = str(q.exception()) if q.exception() else None
+                                except Exception:
+                                    pass
+                                with open(out, "a") as fh:
+                                    fh.write(json.dumps({
+                                        "wall_ms": int(time.time() * 1000),
+                                        "query_name": name, "event": "STOPPED",
+                                        "exception": (exc or "")[:500]}) + "\n")
+                            continue
+                        progress = q.lastProgress
+                        if not progress:
+                            continue
+                        batch_id = progress.get("batchId")
+                        if batch_id is None or (name, batch_id) in seen:
+                            continue
+                        seen.add((name, batch_id))
+                        row = _extract(progress)
+                        row["query_name"] = name
                         with open(out, "a") as fh:
-                            fh.write(json.dumps(_extract(progress)) + "\n")
+                            fh.write(json.dumps(row) + "\n")
+                    except Exception:
+                        continue
             except Exception:
                 pass
             time.sleep(poll_seconds)

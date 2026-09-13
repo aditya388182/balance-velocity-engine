@@ -34,8 +34,7 @@ def velocity_frame(events: DataFrame, cfg: Dict[str, Any], which: str) -> DataFr
 
 
 def make_velocity_sink(cfg: Dict[str, Any], which: str):
-    """Delta for the parity read, Kafka signals for the fraud service."""
-    velocity_path = cfg["paths"]["velocity"]
+    velocity_path = f'{cfg["paths"]["velocity"]}/{which}'
     bootstrap = cfg["kafka_bootstrap"]
     topic_signals = cfg["topics"]["signals"]
 
@@ -44,15 +43,19 @@ def make_velocity_sink(cfg: Dict[str, Any], which: str):
         try:
             if batch_df.isEmpty():
                 return
-            rows = batch_df.withColumn("batch_id", F.lit(batch_id).cast("long"))
+            # written_at disambiguates runs. batch_id restarts at 0 on every engine
+            # start, so in an append-only table `order by batch_id desc` can pick a
+            # row from an EARLIER run. Ordering by wall time cannot.
+            rows = (batch_df
+                    .withColumn("batch_id", F.lit(batch_id).cast("long"))
+                    .withColumn("written_at", F.current_timestamp()))
 
             # Append-only, like the integrity trail: update output mode re-emits a
             # window every time it changes, so the table holds a history of each
             # window's evolution. The parity read takes the LAST value per
             # (account, window_kind, window_start) — the value at the moment the
             # window closed.
-            rows.write.format("delta").mode("append") \
-                .partitionBy("window_kind").save(velocity_path)
+            rows.write.format("delta").mode("append").save(velocity_path)
 
             breached = rows.filter(F.col("limit_breached"))
             if not breached.isEmpty():
