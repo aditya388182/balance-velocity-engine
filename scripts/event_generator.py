@@ -256,6 +256,9 @@ def main() -> None:
             if interval:
                 time.sleep(interval)
 
+        # Trailing heartbeats keep event time moving after the main stream ends.
+        # Without them the watermark freezes at the last event and no event-time
+        # timeout can ever fire — which from Day 3 means the gap alarm never rings.
         if args.heartbeat_account:
             for tick in range(1, args.trailing_heartbeats + 1):
                 hb_seq += 1

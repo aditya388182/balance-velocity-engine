@@ -46,7 +46,7 @@ def make_foreach_batch(cfg: Dict[str, Any]):
             if batch_df.isEmpty():
                 return
 
-            # ---------------- 1. balances: seq-guarded MERGE -----------------
+            #  1. balances: seq-guarded MERGE 
             balance_rows = batch_df.filter(F.col("out_kind").isin(list(BALANCE_KINDS)))
             if not balance_rows.isEmpty():
                 # The operator emits one row per key per batch, so a second row
@@ -74,7 +74,17 @@ def make_foreach_batch(cfg: Dict[str, Any]):
                         .whenNotMatchedInsertAll()
                         .execute())
 
-            # ---------------- 2. integrity events ----------------------------
+            #  1b. metrics 
+            # buffer p99 and the per-kind counts come from the rows the operator
+            # just emitted, which is the only place they exist. Day 6's dashboards
+            # read these names; they are fixed here.
+            try:
+                from spark.engine.metrics import push_batch_metrics
+                push_batch_metrics(batch_df, batch_id, cfg)
+            except Exception:
+                pass   # a broken side-channel is never a reason to stop the money
+
+            #  2. integrity events 
             integrity_rows = batch_df.filter(~F.col("out_kind").isin(list(BALANCE_KINDS)))
             if integrity_rows.isEmpty():
                 return

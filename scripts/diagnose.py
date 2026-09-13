@@ -47,8 +47,6 @@ def warn(msg: str, fix: str = "") -> None:
         print(f"        {DIM}{fix}{RESET}")
 
 
-# --------------------------------------------------------------------------
-
 def latest_log() -> str | None:
     logs = sorted(glob.glob(str(REPO_ROOT / "delivery_log_*.jsonl")),
                   key=lambda p: Path(p).stat().st_mtime)
@@ -87,15 +85,6 @@ def section_delivery(log_path: str | None) -> Dict[str, Any]:
 
 
 def _coverage_check(dl, events_on_topic: int) -> None:
-    """The newest delivery log is not always the run's full history.
-
-    Publishing a follow-up event under a new --run-id creates a NEW log. Parity and
-    the oracle then see a FRAGMENT of the account's history and report the engine's
-    entire accumulated state as a mismatch — three accounts "the oracle never saw",
-    a balance off by the whole burst. Every one of those lines is the oracle being
-    blind, not the engine being wrong, and it is worth naming before it sends anyone
-    hunting a phantom.
-    """
     published = len(dl.get("rows", []))
     if not published or not events_on_topic:
         return

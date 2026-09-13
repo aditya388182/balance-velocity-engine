@@ -43,7 +43,7 @@ def ev(s, a=100):
 
 
 def check_recovery_identity(trials):
-    section("1. A crash changes nothing — the whole point of Stage 3")
+    section("1. Crash identity")
 
     evs = [ev(s) for s in range(1, 201)]
     clean, _ = run_stream(evs, FLAG, batch_size=25)
@@ -85,7 +85,7 @@ def check_recovery_identity(trials):
 
 
 def check_recovery_vs_oracle(trials):
-    section("2. And the recovered state still equals the ORACLE, not just itself")
+    section("2. Recovered state vs oracle")
 
     bad = []
     for t in range(trials):
@@ -121,7 +121,7 @@ def check_recovery_vs_oracle(trials):
 
 
 def check_what_recovery_evidence_actually_is():
-    section("3. What the replay ACTUALLY leaves behind (the plan gets this wrong)")
+    section("3. What replay actually leaves behind")
 
     evs = [ev(s) for s in range(1, 201)]
     evs.insert(80, ev(60))
@@ -148,9 +148,8 @@ def check_what_recovery_evidence_actually_is():
     else:
         fail("merge guard", f"{pre_batch['last_applied_seq']} vs {post_batch['last_applied_seq']}")
 
-    # The stream above contains GENUINE duplicates in batch 3, so DUP records there
-    # are expected. The claim is that the replay re-emits the SAME ones rather than
-    # adding new ones: a faithful re-execution, not an extra delivery.
+    # Batch 3 already has real dups in the input. Replay should emit the same
+    # records, not a second set.
     lost_dups = sorted((b, s) for b, s, _d in lost.dups() if b == 3)
     if recovery_dups and sorted(recovery_dups) == lost_dups:
         ok("the replay re-emits the SAME dup records, never extra ones",
@@ -158,7 +157,8 @@ def check_what_recovery_evidence_actually_is():
     else:
         fail("replay fidelity", f"pre-crash {lost_dups} vs replay {sorted(recovery_dups)}")
 
-    # And on a stream with no duplicates in the data, recovery causes none at all.
+    # No dups in the data => recovery must not invent any. Offsets rolled back
+    # with state, so the machine never saw the batch twice.
     plain = [ev(s) for s in range(1, 201)]
     _st2, rec2, _l2 = run_stream_with_crash(plain, FLAG, crash_before_batch=3, batch_size=25)
     if not rec2.dups():
@@ -170,7 +170,7 @@ def check_what_recovery_evidence_actually_is():
 
 
 def check_mid_gap_kill():
-    section("4. The compound case — a crash INSIDE an open gap window")
+    section("4. Crash inside an open gap window")
 
     evs = [ev(s) for s in range(1, 61) if s != 25]
     clean, rec_clean = run_stream(evs, FLAG, batch_size=10, trailing_idle_batches=40,
@@ -213,10 +213,10 @@ def check_mid_gap_kill():
 
 
 def check_burst(trials):
-    section("5. Stage 5 — the burst, the cap, and the DLQ")
+    section("5. Burst, cap, DLQ")
 
     cfg = dict(FLAG, max_buffer_size=1000)
-    delivered = list(range(2, 10_002))            # seq 1 withheld: pure buffer pressure
+    delivered = list(range(2, 10_002))  # withhold seq 1 so everything buffers
     rng = random.Random(7)
     order = delivered[:]
     rng.shuffle(order)
@@ -273,7 +273,7 @@ def check_burst(trials):
 
 
 def check_neighbours():
-    section("6. The hostile account degrades ITSELF, not its neighbours")
+    section("6. Neighbour isolation")
 
     cfg = dict(FLAG, max_buffer_size=100)
     hot = empty_state()
@@ -293,7 +293,7 @@ def check_neighbours():
 
 
 def check_rss_checker():
-    section("7. The RSS flatness checker itself")
+    section("7. RSS flatness checker")
 
     from importlib import import_module
     mod = import_module("scripts.rss_monitor")
@@ -319,7 +319,7 @@ def check_rss_checker():
 
 
 def check_fixtures():
-    section("8. The committed CI fixtures")
+    section("8. CI fixtures")
 
     import json
     d = REPO_ROOT / "data" / "fixtures" / "ci_sequences"
@@ -346,9 +346,9 @@ def main() -> None:
     p.add_argument("--trials", type=int, default=300)
     args = p.parse_args()
 
-    print("Project 3 — verification 4th part (hermetic: no Docker, no Kafka, no JVM)")
+    print("Project 3 — Day 4 verification (hermetic: no Docker, no Kafka, no JVM)")
     print("=" * 74)
-    print(f"{DIM}Recovery is proved against a MODEL of Spark's checkpoint semantics")
+    print(f"{DIM}Recovery is proved against a model of Spark's checkpoint semantics")
     print(f"(offsets/N before the batch, commits/N after, state rolls back with it).")
     print(f"Block 4.2 measures it for real.{RESET}")
 

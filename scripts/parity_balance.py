@@ -66,18 +66,6 @@ def read_engine_state(spark):
 
 
 def derive_applied_count(bal_row, integ) -> int:
-    """last_applied_seq minus everything below it that never applied.
-
-    The two exclusion sets OVERLAP and must be UNIONED, not summed. When a burst
-    overflows before its gap is confirmed, the alarm fires with last=0 and the
-    earliest buffered seq far above, so the SEQUENCE_GAP range spans everything
-    below it — including the seqs we ourselves evicted to the DLQ. Those seqs are
-    then in both sets.
-
-    Summing the counts double-subtracts them and produces a NEGATIVE applied count
-    (-8000 on a run where the true answer was 1000). A negative count is arithmetic,
-    not physics, and it made a correct engine look broken.
-    """
     last = int(bal_row["last_applied_seq"])
     never_applied = set()
     for lo, hi in integ.get("gap_ranges", set()):
@@ -106,10 +94,6 @@ def main() -> None:
                    help="Stage 1: assert every account fully drained (buffer_size == 0)")
     p.add_argument("--expect-no-integrity", action="store_true",
                    help="Stage 1 shuffle run: nothing was lost, only late")
-    # Day 1's flag. The `deferred` counter it referred to was a Day-1 scaffold that
-    # branches 2-4 have now claimed, so the equivalent assertion is "no integrity
-    # events at all". Accepted as an alias so every command in the Day 1 plan still
-    # runs against Day 2 code.
     p.add_argument("--expect-zero-deferred", action="store_true",
                    help="Day 1 alias for --expect-no-integrity")
     p.add_argument("--save-state", default=None,

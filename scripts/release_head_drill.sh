@@ -76,12 +76,6 @@ python scripts/event_generator.py --accounts 1 --account-prefix TICK- \
 sleep 45
 
 echo "==> full parity BEFORE the release, while the oracle can still model the run"
-# Ordering matters. With the head withheld the oracle is DETERMINATE: min-first
-# eviction retains the k largest, so it predicts the survivors exactly. The moment
-# seq 1 is appended, head_withheld becomes false, the oracle switches to its
-# "appliable head" branch, and its balance is computed as though nothing had been
-# evicted. Comparing after the append turns the oracle's own admission of
-# uncertainty into a FAIL. So compare first, release second.
 OK=1
 python scripts/parity_balance.py --delivery-log "$LOG" --only-account HOT-1 || OK=0
 

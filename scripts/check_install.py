@@ -63,11 +63,43 @@ CHECKS = {
     "spark/engine/sinks.py#2": (
         "buffer_size <> t.buffer_size",
         "observability columns update while an account is stalled"),
+    "spark/engine/sequencer.py": (
+        "state_ttl_ms",
+        "the TTL alarm branch — without it an idle account never times out"),
+    "spark/engine/sequencer.py#2": (
+        "reseeded_from",
+        "the rejoin re-seed, without which TTL eviction corrupts returning accounts"),
+    "spark/engine/velocity.py": (
+        "native sliding-window",
+        "the native velocity path"),
+    "spark/engine/metrics.py": (
+        "p3_buffer_p99",
+        "per-batch metrics with the names the Day-6 runbooks reference"),
+    "spark/jobs/balance_engine.py": (
+        "start_velocity_queries",
+        "the velocity queries are started alongside the sequencer"),
+    "spark/jobs/balance_engine.py#2": (
+        "rejoin_reseed",
+        "the stream-static join that carries opening balances in"),
+    "scripts/velocity_recompute.py": (
+        "settled", "Stage 4 parity with the closed-window filter"),
+    "scripts/rejoin_proof.py": (
+        "THE BALANCE SURVIVED EVICTION", "the Stage 6 rejoin assertion"),
+    "scripts/stage6_proof.sh": (
+        "the tick run advances EVENT time", "the Stage 6 drill"),
+    "scripts/state_growth.py#2": (
+        "--expect-eviction", "the TTL eviction curve check"),
+    "scripts/snapshot_state.sh": (
+        "snapshot IS NOT", "the snapshot script Day 6's drills depend on"),
+    "airflow/dags/state_snapshot.py": (
+        "p3_state_snapshot", "the snapshot DAG"),
+    "docs/native_vs_custom.md": (
+        "Tool consolidation beats tool optimisation", "the Staff-signal design doc"),
 }
 
 
 def main() -> None:
-    print("Day-4 install check")
+    print("Day 4-5 install check")
     print("=" * 78)
     ok, stale, missing = [], [], []
 
@@ -97,7 +129,7 @@ def main() -> None:
         print("engine. Install the complete bundle — the zip, not individual files:")
         print()
         print("    cd ~/balance-velocity-engine")
-        print("    unzip -o ~/balance-velocity-engine-day4-releasehead2.zip")
+        print("    unzip -o ~/balance-velocity-engine-day5.zip")
         print("    chmod +x scripts/*.py scripts/*.sh scripts/chaos/*.sh")
         print("    python scripts/check_install.py")
         sys.exit(1)

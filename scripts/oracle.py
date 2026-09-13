@@ -25,12 +25,6 @@ def read_delivery_log(path: str) -> List[Dict[str, Any]]:
 
 
 def coalesce_ranges(seqs) -> List[Tuple[int, int, int]]:
-    """[3] -> [(3,3,1)];  [7,8,9,15] -> [(7,9,3),(15,15,1)]
-
-    Coalescing matters operationally, not cosmetically: a 50-event upstream outage
-    must read as ONE SEQUENCE_GAP(lo=101, hi=150, count=50), not fifty alerts. The
-    gap-storm runbook depends on the blast radius being legible at a glance.
-    """
     ranges: List[List[int]] = []
     for s in sorted(set(int(x) for x in seqs)):
         if ranges and s == ranges[-1][1] + 1:
@@ -65,6 +59,8 @@ def compute_oracle(rows: List[Dict[str, Any]], gap_policy: str | None = None,
         hi_seq = max(delivered)
         missing = sorted(set(range(1, hi_seq + 1)) - delivered)
         gap_ranges = coalesce_ranges(missing)
+
+        #  overflow 
         head_withheld = 1 in missing
         overflow_evicted: List[int] = []
         overflow_determinate = True
@@ -77,6 +73,7 @@ def compute_oracle(rows: List[Dict[str, Any]], gap_policy: str | None = None,
             # under a burst larger than the cap AND depends on batch boundaries.
             overflow_determinate = False
 
+        #  applied set 
         if gap_policy == "HOLD" and missing:
             first_hole = missing[0]
             applied = {s for s in delivered if s < first_hole}

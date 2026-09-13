@@ -19,7 +19,7 @@ GREEN, RED, YELLOW, DIM, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[2m", 
 PASSES, FAILS = [], []
 
 BASE = 1_000_000_000_000
-STEP = 50                                   # 50 ms/event == rate 20
+STEP = 50  # 50 ms/event == rate 20
 FLAG = {"max_buffer_size": 1000, "gap_policy": "FLAG_AND_CONTINUE",
         "watermark_delay_ms": 30_000, "gap_realert_ms": 60_000}
 HOLD = dict(FLAG, gap_policy="HOLD")
@@ -52,7 +52,7 @@ def stream(missing=(), n=60, cfg=FLAG, batch_size=10, idle=40, idle_step=5000,
 
 
 def check_alarm_arithmetic():
-    section("1. The alarm — computed in the pure core, so it is testable at all")
+    section("1. Alarm arithmetic")
 
     if compute_alarm({}, watermark_ms=500) is None:
         ok("no buffer means no alarm", "nothing to wait for")
@@ -66,6 +66,8 @@ def check_alarm_arithmetic():
     else:
         fail("alarm point", str(compute_alarm(buf, 0)))
 
+    # setTimeoutTimestamp rejects ts <= watermark. If we're already behind it
+    # the gap is confirmable, so clamp to wm+1 and fire next batch.
     if compute_alarm({7: (100, 7_000)}, watermark_ms=9_000) == 9_001:
         ok("clamped to watermark + 1",
            "setTimeoutTimestamp throws at or below the watermark; and if the alarm "
@@ -80,7 +82,7 @@ def check_alarm_arithmetic():
 
 
 def check_three_way_property():
-    section("2. The three-way timing property")
+    section("2. Three-way timing property")
 
     _st, rec = stream(missing=[25])
     gaps = rec.gaps()
@@ -114,7 +116,7 @@ def check_three_way_property():
 
 
 def check_negative_controls():
-    section("3. The two negative controls — the step that proves mechanism, not luck")
+    section("3. Negative controls")
 
     rng = random.Random(4)
     evs = [ev(s) for s in range(1, 121)]
@@ -188,7 +190,7 @@ def check_policies():
 
 
 def check_coalescing():
-    section("5. Range coalescing — one alert per outage, not one per event")
+    section("5. Range coalescing")
 
     _st, rec = stream(missing=range(101, 151), n=200)
     gaps = rec.gaps()
@@ -207,7 +209,7 @@ def check_coalescing():
 
 
 def check_gap_parity(trials):
-    section("6. Gapped streams now match the oracle — new on Day 3")
+    section("6. Gapped streams vs oracle")
 
     bad = []
     for t in range(trials):
@@ -284,7 +286,7 @@ def main() -> None:
 
     print("Project 3 — Day 3 verification (hermetic: no Docker, no Kafka, no JVM)")
     print("=" * 74)
-    print(f"{DIM}Timing is proved through spark/tests/harness.py, a MODEL of Spark's")
+    print(f"{DIM}Timing is proved through spark/tests/harness.py, a model of Spark's")
     print(f"watermark and timeout semantics. Block 3.4 measures it for real.{RESET}")
 
     check_alarm_arithmetic()

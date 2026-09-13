@@ -75,13 +75,6 @@ def consume_gaps(topic: str, timeout: float) -> List[Dict[str, Any]]:
 
 
 def dedup_gaps(gaps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """One entry per (account, lo).
-
-    Under HOLD the same hole is deliberately re-asserted on a bounded cadence, and
-    a replayed batch can append the same record twice. Both are by design, so the
-    probe collapses them the same way the integrity table's readers do — keeping
-    the EARLIEST firing, because that is the one the timing property is about.
-    """
     best: Dict[tuple, Dict[str, Any]] = {}
     for g in gaps:
         key = (g.get("account_id"), g["_detail"].get("lo"))
@@ -162,7 +155,7 @@ def main() -> None:
 
     failures: List[str] = []
 
-    # ---- negative control 1 ------------------------------------------------
+    #  negative control 1 
     if args.expect_no_gaps:
         if gaps:
             for g in gaps:
@@ -176,7 +169,7 @@ def main() -> None:
                   f"LATE, not LOST, and produced no alert")
         _finish(failures)
 
-    # ---- negative control 2 ------------------------------------------------
+    #  negative control 2 
     if args.expect_false_positives:
         if not gaps:
             failures.append("expected false positives but saw none — is the "
@@ -194,7 +187,7 @@ def main() -> None:
                   f"exactly those amounts — the cost is money, not noise.{RESET}")
         _finish(failures)
 
-    # ---- the three-way property -------------------------------------------
+    #  the three-way property 
     if not gaps:
         # Zero signals has three very different causes and the caller needs to know
         # which one. Guessing costs an hour; reading the delivery log costs nothing.

@@ -38,12 +38,14 @@ class Recorder:
 def run_stream(events: Iterable[Dict[str, Any]], cfg: Dict[str, Any],
                *, batch_size: int = 50, watermark_delay_ms: int | None = None,
                trailing_idle_batches: int = 0,
-               idle_event_time_step_ms: int = 0) -> Tuple[tuple, Recorder]:
+               idle_event_time_step_ms: int = 0,
+               opening: Tuple[int, int] | None = None) -> Tuple[tuple, Recorder]:
     events = list(events)
     if watermark_delay_ms is None:
         watermark_delay_ms = int(cfg["watermark_delay_ms"])
 
     state = empty_state()
+    exists = False
     rec = Recorder()
     max_event_ts = 0
     watermark = 0
@@ -51,14 +53,22 @@ def run_stream(events: Iterable[Dict[str, Any]], cfg: Dict[str, Any],
     batch_id = 0
 
     def invoke(rows: List[Dict[str, Any]], timed_out: bool) -> None:
-        nonlocal state, armed
+        nonlocal state, armed, exists
         state, outputs = step(state, rows, cfg, timed_out=timed_out,
-                              watermark_ms=watermark)
+                              watermark_ms=watermark, opening=opening,
+                              state_exists=exists)
+        exists = True
         for kind, seq, detail in outputs:
             if kind == KIND_BALANCE:
                 armed = detail.get("alarm_ts")
             else:
                 rec.outputs.append((batch_id, kind, seq, detail))
+                if kind == "TTL_FLUSH":
+                    # Model state.remove(): the key is released, so the next
+                    # invocation starts cold and the alarm is gone with it.
+                    armed = detail.get("alarm_ts")
+                    state = empty_state()
+                    exists = False
 
     chunks: List[List[Dict[str, Any]]] = [
         events[i:i + batch_size] for i in range(0, len(events), batch_size)

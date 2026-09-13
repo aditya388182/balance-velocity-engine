@@ -1,17 +1,4 @@
 #!/usr/bin/env bash
-#   reset -> start engine -> wait ready -> publish -> drain -> stop engine -> parity
-#
-#   ./scripts/stage_run.sh --gen "--accounts 3 --ordered --rate 30 --duration 60 --seed 7" \
-#                          --parity "--expect-empty-buffer" --drain 45
-#
-# Flags:
-#   --gen     "..."   passthrough args for event_generator.py   (required)
-#   --parity  "..."   passthrough args for parity_balance.py    (default: none)
-#   --drain   N       seconds to let the engine settle after the generator ends (default 45)
-#   --no-reset        keep the existing lake/topics
-#   --no-parity       stop before parity (mechanism-only exercises, e.g. Block 2.5)
-#   --probe   "..."   run gap_timing_probe.py after parity with these args
-#   --keep-running    leave the engine up after the run
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -53,6 +40,9 @@ stop_engine () {
   if [[ -f run/engine.pid ]]; then
     local pid; pid="$(cat run/engine.pid)"
     if kill -0 "$pid" 2>/dev/null; then
+      # SIGTERM: a graceful shutdown checkpoints cleanly, which is what you want
+      # BETWEEN stages.v4 drill uses SIGKILL precisely because a clean
+      # shutdown proves nothing about recovery.
       echo "==> stopping engine gracefully (SIGTERM) pid=$pid"
       kill -TERM "$pid" 2>/dev/null || true
       for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done

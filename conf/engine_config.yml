@@ -1,29 +1,35 @@
 #  watermark / trigger 
-watermark_delay: "30 seconds"      
-trigger_interval: "5 seconds"      # production: "15 seconds" (spec range 10-30s)
-                                   # why: shorter trigger tightens gap latency, costs more
-                                   # checkpoint writes to object storage.
+
+watermark_delay: "30 seconds"      # production: "10 minutes"
+trigger_interval: "5 seconds"      # production: "15 seconds"
 
 #  sequencer 
-max_buffer_size: 1000              
-state_ttl: "120 seconds"          
-gap_policy: "FLAG_AND_CONTINUE"    
-gap_realert_interval: "60 seconds" 
 
-#  velocity: native windowed aggregation 
-vel_window: "2 minutes"            # production: "1 hour"
-vel_slide: "30 seconds"            # production: "5 minutes"
-vel_window_long: "10 minutes"      # production: "24 hours"
-vel_slide_long: "1 minute"         # production: "30 minutes"
-vel_limit: 500000                  # minor units (= 5,000.00). production: per-tier limits from risk.
+max_buffer_size: 1000              # production: 1000
+state_ttl: "120 seconds"           # production: "24 hours"
+
+gap_policy: "FLAG_AND_CONTINUE"   # Alternative: HOLD
+rejoin_reseed: true
+gap_realert_interval: "60 seconds" # production: "1 hour"
+
+#  velocity 
+
+vel_window: "2 minutes"             # production: "1 hour"
+vel_slide: "30 seconds"             # production: "5 minutes"
+vel_window_long: "10 minutes"       # production: "24 hours"
+vel_slide_long: "1 minute"          # production: "30 minutes"
+vel_limit: 500000                   # minor units; production: risk-tier limits
 
 #  checkpoint identity 
-checkpoint_root: "s3a://balance-lake/checkpoints"
-spark_version_tag: "v3.5.1"        
 
-#  kafka / registry 
+checkpoint_root: "s3a://balance-lake/checkpoints"
+spark_version_tag: "v3.5.1"
+
+# kafka / registry 
+
 kafka_bootstrap: "localhost:29092"
 schema_registry_url: "http://localhost:8081"
+
 topics:
   events: "accounts.events"
   signals: "accounts.signals"
@@ -31,23 +37,26 @@ topics:
   integrity: "accounts.integrity"
 
 #  object store 
+
 s3:
-  endpoint: "http://localhost:9000"     
+  endpoint: "http://localhost:9000"
   access_key: "minioadmin"
   secret_key: "minioadmin"
+
 paths:
   balances: "s3a://balance-lake/balances"
   integrity: "s3a://balance-lake/integrity_events"
   velocity: "s3a://balance-lake/velocity"
 
-#  generator defaults (offline determinism) 
-generator:
-  clock_start_ms: 1767225600000    # 2026-01-01T00:00:00Z — the fixed epoch for --offline runs.
-                                   # Offline mode must be byte-reproducible; wall clock is not.
+#  generator 
 
-#  spark runtime (laptop sizing) 
+generator:
+  clock_start_ms: 1767225600000  # 2026-01-01T00:00:00Z
+
+#  spark runtime 
+
 spark:
-  master: "local[4]"              
-  shuffle_partitions: 4            
+  master: "local[4]"              # production: yarn/k8s
+  shuffle_partitions: 4           # production: 200+
   driver_memory: "4g"
-  max_offsets_per_trigger: 5000    # bounds micro-batch size so recovery replays stay predictable
+  max_offsets_per_trigger: 5000

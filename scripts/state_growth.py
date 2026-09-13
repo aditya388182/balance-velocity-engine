@@ -52,6 +52,12 @@ def main() -> None:
     p.add_argument("--max-rows", type=int, default=None,
                    help="expected plateau, e.g. max_buffer_size + a few account rows")
     p.add_argument("--compare", nargs=2, metavar=("CAPPED", "UNCAPPED"))
+    p.add_argument("--expect-eviction", action="store_true",
+                   help="Stage 6: assert state rows PEAKED and then FELL as idle "
+                        "accounts were evicted. This is the job this script is "
+                        "actually right for — state rows count ACCOUNTS, and TTL "
+                        "eviction is precisely a change in the number of accounts.")
+    p.add_argument("--min-decline-pct", type=float, default=50.0)
     args = p.parse_args()
 
     if args.compare:
@@ -75,6 +81,38 @@ def main() -> None:
               f"state ({b['peak_state_rows']} vs {a['peak_state_rows']}).")
         print("  Check: was P3_MAX_BUFFER_SIZE actually echoed by [config] at startup,")
         print("  and did the burst finish publishing before the engine was stopped?")
+        sys.exit(1)
+
+    if args.expect_eviction:
+        s = summarise(args.check or "logs/progress.jsonl")
+        series = s["rows_series"]
+        peak = max(series)
+        peak_at = series.index(peak)
+        after = series[peak_at:]
+        final = series[-1]
+        decline_pct = 0.0 if peak == 0 else 100.0 * (peak - final) / peak
+        print(f"file             : {s['path']}")
+        print(f"batches          : {s['batches']}")
+        print(f"peak state rows  : {peak} (batch index {peak_at})")
+        print(f"final state rows : {final}")
+        print(f"decline          : {decline_pct:.0f}%   "
+              f"(need >= {args.min_decline_pct:.0f}%)")
+        print("curve            : " + " ".join(str(x) for x in series[::max(1, len(series)//20)]))
+        if len(series) < 6:
+            print(f"{YELLOW}TOO FEW BATCHES{RESET} — a curve through 5 points is not a curve")
+            sys.exit(1)
+        if peak_at == len(series) - 1:
+            print(f"{RED}STATE NEVER FELL{RESET} — it peaked on the last batch, so the "
+                  f"run ended before TTL could evict. Let it idle for at least one "
+                  f"state_ttl beyond the last event.")
+            sys.exit(1)
+        if decline_pct >= args.min_decline_pct:
+            print(f"{GREEN}TTL EVICTION OBSERVED{RESET} — state rose to {peak} accounts "
+                  f"and fell to {final} as idle keys were released")
+            sys.exit(0)
+        print(f"{RED}INSUFFICIENT DECLINE{RESET} — {decline_pct:.0f}% is below the "
+              f"{args.min_decline_pct:.0f}% threshold. Is state_ttl_ms set, and did "
+              f"event time advance past it? The TTL is measured against the WATERMARK.")
         sys.exit(1)
 
     if not args.check:

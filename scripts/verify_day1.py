@@ -75,6 +75,8 @@ def check_contracts():
     else:
         ok("four topics configured", ", ".join(CFG["topics"].values()))
 
+    # 200 default shuffle partitions = a RocksDB instance per partition per
+    # operator. Fine on a cluster, hangs a 16 GB laptop.
     if CFG["spark"]["shuffle_partitions"] <= 8:
         ok("shuffle.partitions is laptop-sized", str(CFG["spark"]["shuffle_partitions"]))
     else:
@@ -117,6 +119,8 @@ def check_state_layout():
     else:
         fail("state round-trip", str((last, bal, buf, seen, st[3])))
 
+    # Spark will happily pickle numpy ints / subclassed ints into the buffer.
+    # The drain loop does `last + 1 in buf`, which misses those.
     class Fake(int):
         pass
     buf = unpack_buffer(pack_buffer({Fake(9): (Fake(1), Fake(2))}))
@@ -153,8 +157,8 @@ def check_sequencer_core():
 
     st, out = step(empty_state(), [ev(1), ev(2), ev(3)], {"max_buffer_size": 1000})
     last, bal, buf, _ = tuple_to_parts(st)
-    if (last, bal, buf) == (3, 300, {}) and out[-1][2]["deferred"] == 0:
-        ok("branch 1 applies in order, defers nothing", "last=3 balance=300")
+    if (last, bal, buf) == (3, 300, {}) and [k for k, _, _ in out] == ["BALANCE"]:
+        ok("branch 1 applies in order, no integrity events", "last=3 balance=300")
     else:
         fail("branch 1", str((last, bal, buf, out)))
 
@@ -165,11 +169,13 @@ def check_sequencer_core():
     else:
         fail("within-batch sort", str((tuple_to_parts(a)[:2], tuple_to_parts(b)[:2])))
 
+    # Day 1 used to drop early arrivals as deferred. Day 2 buffers them.
+    # Keep this assertion so the verifier still runs against current code.
     st, out = step(empty_state(), [ev(3)], {"max_buffer_size": 1000})
-    if tuple_to_parts(st)[0] == 0 and out[-1][2]["deferred"] == 1:
-        ok("cross-batch disorder is DEFERRED today", "Day 2's buffer is exactly this gap")
+    if tuple_to_parts(st)[0] == 0 and sorted(tuple_to_parts(st)[2]) == [3]:
+        ok("cross-batch disorder is BUFFERED (Day 1 deferred it)", "branch 2 claims it")
     else:
-        fail("deferred accounting", str(out))
+        fail("buffer insert", str(tuple_to_parts(st)[:3]))
 
     st, out = step(empty_state(), [], {"max_buffer_size": 1000},
                    timed_out=True, watermark_ms=1)
@@ -217,9 +223,7 @@ def check_generator_determinism():
         else:
             fail("delivery log schema", str(sorted(keys)))
 
-        # Event time must be LOGICAL, not publish order. Note --ordered is dropped
-        # here: it disables shuffling by design, and leaving it in would make this
-        # check silently vacuous.
+        # Drop --ordered or this check is a no-op: ordered mode never shuffles.
         shuffle_cmd = [a for a in base if a != "--ordered"] + ["--shuffle-window", "20"]
         r2 = subprocess.run(shuffle_cmd, capture_output=True, text=True, env=env)
         if r2.returncode != 0:
@@ -283,11 +287,11 @@ def check_oracle():
 
 
 def check_overflow_invariant():
-    section("6. Overflow invariant (the claim Stage 5 rests on)")
+    section("6. Overflow invariant")
     from scripts.oracle import compute_oracle
 
     def simulate(arrivals, cap):
-        """min(buf ∪ {s}) eviction with the head withheld: nothing can apply or drain."""
+        # Evict min(buf ∪ {s}). Head is withheld so nothing can apply/drain.
         buf, evicted = set(), []
         for s in arrivals:
             if s in buf:
@@ -304,7 +308,7 @@ def check_overflow_invariant():
 
     rng = random.Random(0)
     cap, n, trials = 7, 40, 300
-    delivered = list(range(2, n + 2))                 # seq 1 withheld
+    delivered = list(range(2, n + 2))  # seq 1 never arrives
     predicted_buf = set(sorted(delivered)[-cap:])
     predicted_ev = sorted(delivered)[:-cap]
 
@@ -333,7 +337,7 @@ def check_overflow_invariant():
 
 
 def check_environment():
-    section("7. Environment (warnings only — the hermetic tier above is the gate)")
+    section("7. Environment (warnings only)")
     major, minor = sys.version_info[:2]
     if (major, minor) == (3, 11):
         ok("python 3.11", sys.version.split()[0])

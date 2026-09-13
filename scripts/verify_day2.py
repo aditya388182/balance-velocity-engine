@@ -49,7 +49,7 @@ def of_kind(out, kind):
 
 
 def check_branch_1_and_drain():
-    section("1. Branch 1 — apply and drain (the reordering mechanism)")
+    section("1. Branch 1 — apply and drain")
 
     st, out = feed(empty_state(), [1, 2, 3, 4, 5])
     last, bal, buf, _ = tuple_to_parts(st)
@@ -58,6 +58,7 @@ def check_branch_1_and_drain():
     else:
         fail("in-order", str((last, bal, buf)))
 
+    # One event per call so we can watch the buffer fill, then drain on 1.
     st = empty_state()
     trace = []
     for s in [3, 2, 1]:
@@ -90,7 +91,7 @@ def check_branch_1_and_drain():
 
 
 def check_branch_4_duplicates():
-    section("2. Branches 4 and 4b — duplicate drops, counted never silent")
+    section("2. Branches 4 and 4b — duplicate drops")
 
     st, _ = feed(empty_state(), [1, 2, 3])
     st, out = feed(st, [2])
@@ -129,7 +130,7 @@ def check_branch_4_duplicates():
 
 
 def check_branch_3_overflow():
-    section("3. Branch 3 — min-first eviction over the buffer AND the arrival")
+    section("3. Branch 3 — min-first eviction")
     small = {"max_buffer_size": 5, "gap_policy": "FLAG_AND_CONTINUE"}
 
     st = empty_state()
@@ -143,6 +144,8 @@ def check_branch_3_overflow():
     else:
         fail("overflow", f"buf={sorted(buf)} evicted={evicted}")
 
+    # Victim is min(buf ∪ arrival). If we only evicted min(buf) we'd drop 10
+    # and keep 3, which is the wrong k-largest set.
     st = empty_state()
     for s in [10, 11, 12, 13, 14]:
         st, _ = feed(st, [s], small)
@@ -157,10 +160,10 @@ def check_branch_3_overflow():
 
 
 def check_k_largest_invariant(trials):
-    section("4. The k-largest invariant, against the REAL step() this time")
+    section("4. k-largest invariant against the real step()")
     small = {"max_buffer_size": 5, "gap_policy": "FLAG_AND_CONTINUE"}
     rng = random.Random(0)
-    delivered = list(range(2, 42))               # head withheld
+    delivered = list(range(2, 42))  # head withheld
     want_buf = sorted(delivered)[-5:]
     want_ev = sorted(delivered)[:-5]
     bad = 0
@@ -170,7 +173,7 @@ def check_k_largest_invariant(trials):
         st = empty_state()
         evicted = []
         i = 0
-        while i < len(order):                     # random batch boundaries too
+        while i < len(order):
             size = rng.randint(1, 4)
             st, out = feed(st, order[i:i + size], small)
             evicted += [q for q, _ in of_kind(out, KIND_OVERFLOW)]
@@ -195,7 +198,7 @@ def check_k_largest_invariant(trials):
 
 
 def check_restart():
-    section("5. Restart — the cheapest exactly-once regression test")
+    section("5. Restart")
     import pickle
 
     st, _ = feed(empty_state(), [1, 2, 3])
@@ -222,7 +225,7 @@ def check_restart():
 
 
 def check_engine_vs_oracle(trials):
-    section("6. Engine vs oracle — randomised property test")
+    section("6. Engine vs oracle")
     bad = []
     for t in range(trials):
         rng = random.Random(50_000 + t)
@@ -261,14 +264,14 @@ def check_engine_vs_oracle(trials):
 
 
 def check_day3_boundary():
-    section("7. The Day-2 boundary, asserted not assumed")
+    section("7. Day-2 boundary")
     st = empty_state()
     for s in [1, 2, 4, 5]:
         st, out = feed(st, [s])
     last, _, buf, _ = tuple_to_parts(st)
     if last == 2 and sorted(buf) == [4, 5] and "SEQUENCE_GAP" not in [k for k, _, _ in out]:
         ok("a real gap still stalls today — successors buffer forever",
-           "no SEQUENCE_GAP exists future work: Day 3; do NOT run parity on a --gap stream")
+           "no SEQUENCE_GAP exists until Day 3; do NOT run parity on a --gap stream")
     else:
         fail("gap boundary", str((last, sorted(buf))))
 
@@ -285,7 +288,7 @@ def main() -> None:
                    help="property-test trial count (default 400)")
     args = p.parse_args()
 
-    print("Day 2 verification (hermetic: no Docker, no Kafka, no JVM)")
+    print("Project 3 — Day 2 verification (hermetic: no Docker, no Kafka, no JVM)")
     print("=" * 74)
     check_branch_1_and_drain()
     check_branch_4_duplicates()
