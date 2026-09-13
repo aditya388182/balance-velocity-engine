@@ -1,32 +1,27 @@
 #  watermark / trigger 
-
 watermark_delay: "30 seconds"      # production: "10 minutes"
 trigger_interval: "5 seconds"      # production: "15 seconds"
 
 #  sequencer 
-
 max_buffer_size: 1000              # production: 1000
 state_ttl: "120 seconds"           # production: "24 hours"
-
-gap_policy: "FLAG_AND_CONTINUE"   # Alternative: HOLD
-rejoin_reseed: true
+gap_policy: "FLAG_AND_CONTINUE"    # Can be changed to HOLD based on business needs.
+velocity_enabled: true             # production: true
+rejoin_reseed: true                # Re-seed account state after TTL eviction.
 gap_realert_interval: "60 seconds" # production: "1 hour"
 
-#  velocity 
-
-vel_window: "2 minutes"             # production: "1 hour"
-vel_slide: "30 seconds"             # production: "5 minutes"
-vel_window_long: "10 minutes"       # production: "24 hours"
-vel_slide_long: "1 minute"          # production: "30 minutes"
-vel_limit: 500000                   # minor units; production: risk-tier limits
+#  velocity: native windowed aggregation 
+vel_window: "2 minutes"            # production: "1 hour"
+vel_slide: "30 seconds"            # production: "5 minutes"
+vel_window_long: "10 minutes"      # production: "24 hours"
+vel_slide_long: "1 minute"         # production: "30 minutes"
+vel_limit: 500000                  # Minor units (= 5,000.00); production uses risk-based limits.
 
 #  checkpoint identity 
-
 checkpoint_root: "s3a://balance-lake/checkpoints"
-spark_version_tag: "v3.5.1"
+spark_version_tag: "v3.5.1"        # Checkpoints are stored under a versioned path.
 
-# kafka / registry 
-
+#  kafka / registry 
 kafka_bootstrap: "localhost:29092"
 schema_registry_url: "http://localhost:8081"
 
@@ -37,9 +32,8 @@ topics:
   integrity: "accounts.integrity"
 
 #  object store 
-
 s3:
-  endpoint: "http://localhost:9000"
+  endpoint: "http://localhost:9000" # Change to 9010 if port 9000 is already in use.
   access_key: "minioadmin"
   secret_key: "minioadmin"
 
@@ -48,15 +42,13 @@ paths:
   integrity: "s3a://balance-lake/integrity_events"
   velocity: "s3a://balance-lake/velocity"
 
-#  generator 
-
+#  generator defaults (offline determinism) 
 generator:
-  clock_start_ms: 1767225600000  # 2026-01-01T00:00:00Z
+  clock_start_ms: 1767225600000    # Fixed start time for reproducible offline runs.
 
-#  spark runtime 
-
+#  spark runtime (laptop sizing) 
 spark:
-  master: "local[4]"              # production: yarn/k8s
-  shuffle_partitions: 4           # production: 200+
+  master: "local[4]"               # production: yarn/k8s, 8-12 executors
+  shuffle_partitions: 4             # production: 200+
   driver_memory: "4g"
-  max_offsets_per_trigger: 5000
+  max_offsets_per_trigger: 5000    # Keeps micro-batches and recovery runs manageable.

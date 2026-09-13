@@ -10,8 +10,11 @@ from typing import Any, Dict, List
 GREEN, RED, YELLOW, DIM, RESET = "\033[92m", "\033[91m", "\033[93m", "\033[2m", "\033[0m"
 
 
-def load(path: str) -> List[Dict[str, Any]]:
-    rows = []
+DEFAULT_QUERY = "balance_engine"
+
+
+def load(path: str, query_name: str | None = DEFAULT_QUERY) -> List[Dict[str, Any]]:
+    rows, seen_names = [], set()
     for line in Path(path).read_text().splitlines():
         line = line.strip()
         if not line:
@@ -20,14 +23,24 @@ def load(path: str) -> List[Dict[str, Any]]:
             r = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if r.get("batch_id") is not None:
-            rows.append(r)
+        if r.get("batch_id") is None:
+            continue
+        name = r.get("query_name")
+        if name:
+            seen_names.add(name)
+        if query_name and name and name != query_name:
+            continue
+        rows.append(r)
     rows.sort(key=lambda r: r["batch_id"])
+    if not rows and seen_names:
+        raise SystemExit(
+            f"no progress rows for query {query_name!r}; "
+            f"this file holds {sorted(seen_names)}. Pass --query.")
     return rows
 
 
-def summarise(path: str) -> Dict[str, Any]:
-    rows = load(path)
+def summarise(path: str, query_name: str | None = DEFAULT_QUERY) -> Dict[str, Any]:
+    rows = load(path, query_name)
     if not rows:
         raise SystemExit(f"{path} has no usable progress rows — was the engine running?")
     r_rows = [r.get("state_rows") for r in rows if r.get("state_rows") is not None]
@@ -37,6 +50,7 @@ def summarise(path: str) -> Dict[str, Any]:
                          f"check spark.sql.streaming.metricsEnabled")
     return {
         "path": path,
+        "query_name": query_name,
         "batches": len(rows),
         "peak_state_rows": max(r_rows),
         "final_state_rows": r_rows[-1],
@@ -58,10 +72,13 @@ def main() -> None:
                         "actually right for — state rows count ACCOUNTS, and TTL "
                         "eviction is precisely a change in the number of accounts.")
     p.add_argument("--min-decline-pct", type=float, default=50.0)
+    p.add_argument("--query", default=DEFAULT_QUERY,
+                   help="which streaming query's series to read. progress.jsonl "
+                        "holds all of them; mixing them is meaningless.")
     args = p.parse_args()
 
     if args.compare:
-        a, b = (summarise(x) for x in args.compare)
+        a, b = (summarise(x, args.query) for x in args.compare)
         print(f"{'':<20}{'capped':>16}{'uncapped':>16}")
         for k in ("batches", "peak_state_rows", "final_state_rows",
                   "peak_state_mb", "final_state_mb"):
@@ -84,7 +101,7 @@ def main() -> None:
         sys.exit(1)
 
     if args.expect_eviction:
-        s = summarise(args.check or "logs/progress.jsonl")
+        s = summarise(args.check or "logs/progress.jsonl", args.query)
         series = s["rows_series"]
         peak = max(series)
         peak_at = series.index(peak)
@@ -92,6 +109,7 @@ def main() -> None:
         final = series[-1]
         decline_pct = 0.0 if peak == 0 else 100.0 * (peak - final) / peak
         print(f"file             : {s['path']}")
+        print(f"query            : {s['query_name']}")
         print(f"batches          : {s['batches']}")
         print(f"peak state rows  : {peak} (batch index {peak_at})")
         print(f"final state rows : {final}")
@@ -118,7 +136,7 @@ def main() -> None:
     if not args.check:
         raise SystemExit("--check or --compare is required")
 
-    s = summarise(args.check)
+    s = summarise(args.check, args.query)
     print(f"file             : {s['path']}")
     print(f"batches          : {s['batches']}")
     print(f"peak state rows  : {s['peak_state_rows']}")

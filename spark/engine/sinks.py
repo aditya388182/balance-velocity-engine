@@ -83,9 +83,9 @@ def make_foreach_batch(cfg: Dict[str, Any]):
                 push_batch_metrics(batch_df, batch_id, cfg)
             except Exception:
                 pass   # a broken side-channel is never a reason to stop the money
-
-            #  2. integrity events 
-            integrity_rows = batch_df.filter(~F.col("out_kind").isin(list(BALANCE_KINDS)))
+            integrity_rows = batch_df.filter(
+                (~F.col("out_kind").isin(list(BALANCE_KINDS)))
+                | (F.col("out_kind") == KIND_TTL))
             if integrity_rows.isEmpty():
                 return
 

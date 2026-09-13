@@ -46,6 +46,8 @@ _ENV_OVERRIDES = {
     "P3_MASTER": ("spark.master", str),
     "P3_MAX_OFFSETS_PER_TRIGGER": ("spark.max_offsets_per_trigger", int),
     "P3_VEL_LIMIT": ("vel_limit", int),
+    "P3_VELOCITY_ENABLED": ("velocity_enabled", lambda v: v not in ("0", "false", "False")),
+    "P3_REJOIN_RESEED": ("rejoin_reseed", lambda v: v not in ("0", "false", "False")),
 }
 
 

@@ -106,6 +106,17 @@ CHECKS = {
     "scripts/diagnose_velocity.py": (
         "Which of the velocity failure causes",
         "the velocity failure discriminator"),
+    "scripts/state_growth.py#3": (
+        "query_name", "reads ONE query's series — progress.jsonl holds them all"),
+    "spark/engine/sinks.py#3": (
+        "TTL_FLUSH is in BALANCE_KINDS because",
+        "evictions also land in the audit trail, so they are observable"),
+    "scripts/wait_for_drain.py": (
+        "A sleep asserts a duration", "condition-based waiting instead of blind sleeps"),
+    "scripts/stage6_proof.sh#2": (
+        "velocity disabled", "the TTL drill isolates its variable"),
+    "conf/engine_config.yml": (
+        "velocity_enabled", "the velocity toggle"),
     "docs/native_vs_custom.md": (
         "Tool consolidation beats tool optimisation", "the Staff-signal design doc"),
 }

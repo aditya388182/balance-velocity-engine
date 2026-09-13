@@ -71,25 +71,21 @@ def main() -> None:
 
     events = deserialize_stream(raw, CFG["schema_registry_url"])
 
-    # ---- checkpoint-identity decision: the watermark ------------------------
+    #  checkpoint-identity decision: the watermark 
     events = events.withWatermark("event_ts", CFG["watermark_delay"])
 
-    # ---- velocity: the native path, started BEFORE the sequencer ------------
+    #  velocity: the native path, started BEFORE the sequencer 
     # A second query on the same watermarked stream. It shares nothing with the
     # sequencer except its input, which is the point: velocity is order-agnostic
     # and belongs in Spark's windowed aggregation, not in hand-rolled state.
-    vel_queries = start_velocity_queries(
-        events, CFG, lambda name: checkpoint_path(CFG, name))
-    for q in vel_queries:
-        print(f"[engine] velocity    : {q.name}")
-
-    # ---- rejoin re-seed: a stream-static left join with the balances table ---
-    # A returning account arrives with EMPTY state at seq 0 because TTL released
-    # it. These two columns carry its durable opening balance in on the rows, and
-    # the sequencer seeds from them ONLY when the state is genuinely cold. Without
-    # this, TTL eviction silently corrupts the balance of every account that
-    # comes back.
-    #
+    if CFG.get("velocity_enabled", True):
+        vel_queries = start_velocity_queries(
+            events, CFG, lambda name: checkpoint_path(CFG, name))
+        for q in vel_queries:
+            print(f"[engine] velocity    : {q.name}")
+    else:
+        vel_queries = []
+        print("[engine] velocity    : DISABLED (P3_VELOCITY_ENABLED=0)")
     # NOTE: adding this join changes the query plan, so it requires a FRESH
     # checkpoint. That is what the versioned checkpoint path is for, and Day 5
     # runs start from reset_lake anyway.
