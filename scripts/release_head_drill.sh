@@ -19,6 +19,21 @@ done
 [ -d .venv ] && source .venv/bin/activate
 mkdir -p logs run
 
+# Fail fast rather than half-run. A missing helper five minutes in wastes the
+# whole drill and reports FAIL for a reason that has nothing to do with the engine.
+MISSING=0
+for f in scripts/inject_burst.py scripts/buffer_proof.py scripts/late_arrival_proof.py \
+         scripts/parity_balance.py scripts/event_generator.py scripts/reset_lake.sh; do
+  [[ -f "$f" ]] || { echo "MISSING: $f" >&2; MISSING=1; }
+done
+if [[ "$MISSING" -eq 1 ]]; then
+  echo "" >&2
+  echo "Install the Day-4 corrections before running this drill:" >&2
+  echo "  unzip -o ~/balance-velocity-engine-day4-releasehead.zip" >&2
+  echo "  chmod +x scripts/*.py scripts/*.sh" >&2
+  exit 2
+fi
+
 stop_engine () {
   [[ -f run/engine.pid ]] && { kill -TERM "$(cat run/engine.pid)" 2>/dev/null || true; sleep 3; }
   pkill -f "spark/jobs/balance_engine.py" 2>/dev/null || true
@@ -60,6 +75,16 @@ python scripts/event_generator.py --accounts 1 --account-prefix TICK- \
        --rate 2 --duration "$TICK_DURATION" --heartbeat-account --seed 3 >/dev/null
 sleep 45
 
+echo "==> full parity BEFORE the release, while the oracle can still model the run"
+# Ordering matters. With the head withheld the oracle is DETERMINATE: min-first
+# eviction retains the k largest, so it predicts the survivors exactly. The moment
+# seq 1 is appended, head_withheld becomes false, the oracle switches to its
+# "appliable head" branch, and its balance is computed as though nothing had been
+# evicted. Comparing after the append turns the oracle's own admission of
+# uncertainty into a FAIL. So compare first, release second.
+OK=1
+python scripts/parity_balance.py --delivery-log "$LOG" --only-account HOT-1 || OK=0
+
 echo "==> snapshot BEFORE releasing the head"
 python scripts/buffer_proof.py --account HOT-1 --mode capped --events "$EVENTS" \
        --save logs/proof_before_release.json
@@ -76,11 +101,7 @@ sleep 45
 stop_engine
 trap - EXIT
 
-echo "==> full parity against the COMPLETE delivery history"
-OK=1
-python scripts/parity_balance.py --delivery-log "$LOG" || OK=0
-
-echo "==> late-arrival proof"
+echo "==> late-arrival proof (the oracle cannot model a post-gap arrival; this can)"
 python scripts/late_arrival_proof.py --account HOT-1 --seq 1 \
        --expect-balance "$BEFORE_BAL" --expect-last "$BEFORE_LAST" \
        --save logs/proof_release_head.json || OK=0
