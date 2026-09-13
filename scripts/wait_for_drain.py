@@ -1,40 +1,4 @@
 #!/usr/bin/env python3
-# scripts/wait_for_drain.py
-"""Block until a streaming query has actually caught up. Replaces blind sleeps.
-
-WHY SLEEPS WERE NOT ENOUGH
---------------------------
-Every drill used `sleep N` to mean "the engine has finished". That holds only while
-the engine keeps up. Stage 6's first run put 12,000 events and two windowed
-aggregations on a local[4] driver, batches stretched to ~33 s against a 5 s trigger,
-and a 45-second sleep covered barely one batch. A sleep asserts a duration; a drill
-needs a condition.
-
-AND THE FIRST CONDITION I CHOSE WAS UNSATISFIABLE
--------------------------------------------------
-The first version waited for "N consecutive committed batches with zero input
-rows". Structured Streaming does not COMMIT a batch when there is no new data and
-nothing else to do — it skips the trigger entirely. lastProgress stays pinned to the
-last real batch forever.
-
-So the waiter sat for 300 seconds watching batch 7, whose duration was 7 ms, at the
-end of a sequence that fell 13265 -> 11316 -> 9795 -> 3847 -> 7. That is a query
-that CAUGHT UP. It then reported a timeout and blamed the engine.
-
-    An empty batch is not a signal Spark reliably emits.
-    The signal of a drained query is the ABSENCE of new batches.
-
-THE THREE SIGNALS, IN ORDER OF AUTHORITY
-----------------------------------------
-1. CAUGHT UP   the last batch's source endOffset == latestOffset. The query's own
-               statement that it read everything the source had. Authoritative.
-2. IDLE        no new batch_id for long enough, scaled to the last batch's duration
-               so a genuinely slow batch is not mistaken for silence.
-3. EMPTY BATCH the last batch took in zero rows. Happens when a timeout fires with
-               no data, so it is real but not something to rely on.
-
-    python scripts/wait_for_drain.py --query balance_engine --timeout 300
-"""
 from __future__ import annotations
 
 import argparse
