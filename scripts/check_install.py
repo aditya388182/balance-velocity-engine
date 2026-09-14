@@ -111,6 +111,11 @@ CHECKS = {
     "spark/engine/sinks.py#3": (
         "TTL_FLUSH is in BALANCE_KINDS because",
         "evictions also land in the audit trail, so they are observable"),
+    "scripts/trace_event.py": (
+        "THE FIVE STAGES", "the one-shot event tracer"),
+    "scripts/wait_for_drain.py#2": (
+        "EVERY SIGNAL IS MEASURED AGAINST A BASELINE",
+        "drain waits require a batch NEWER than the one before the wait began"),
     "scripts/wait_for_drain.py": (
         "THE THREE SIGNALS, IN ORDER OF AUTHORITY",
         "drain detection via source offsets / idleness, not unsatisfiable empty batches"),
@@ -121,13 +126,36 @@ CHECKS = {
         "velocity disabled", "the TTL drill isolates its variable"),
     "conf/engine_config.yml": (
         "velocity_enabled", "the velocity toggle"),
+    # ---- Day 6 ----
+    "scripts/corrupt_checkpoint.sh": ("truncates files", "the corruption injector"),
+    "scripts/restore_from_snapshot.sh": ("never over the corpse", "Drill 1"),
+    "scripts/upgrade_dual_run.sh": ("NEVER reads old-format state", "Drill 2"),
+    "scripts/final_audit.py": ("completion audit", "the final audit"),
+    "scripts/verify_day6.py": ("more easily-missed question", "the cross-reference verifier"),
+    "infra/grafana/dashboards/state_health.json": ("p3_state_rows", "State Health dashboard"),
+    "infra/grafana/dashboards/integrity_signals.json": ("p3_gap_rate", "Integrity Signals dashboard"),
+    "infra/prometheus/prometheus.yml": ("honor_labels", "Prometheus scrape config"),
+    ".github/workflows/ci.yml": ("STATE_SCHEMA changed", "the CI pipeline with its schema gate"),
+    ".github/workflows/deploy.yml": ("RECORDS THE VERSIONED CHECKPOINT", "the deploy workflow"),
+    "terraform/main.tf": ("AN ACKNOWLEDGED STUB", "the terraform stub"),
+    "runbooks/state_growing_unbounded.md": ("p3_buffer_p99", "runbook 1"),
+    "runbooks/gap_alert_storm.md": ("partition lag", "runbook 2"),
+    "runbooks/checkpoint_corruption.md": ("snapshot IS NOT", "runbook 3"),
+    "runbooks/spark_upgrade.md": ("dual-run, validate, cut over", "runbook 4"),
+    "README.md": ("Honest limitations", "the README"),
+    "docs/video_script.md": ("Beat sheet", "the video script"),
     "docs/native_vs_custom.md": (
         "Tool consolidation beats tool optimisation", "the Staff-signal design doc"),
 }
 
 
 def main() -> None:
-    print("Day 4-5 install check")
+    build = "UNKNOWN"
+    try:
+        build = (REPO_ROOT / "BUILD").read_text().strip()
+    except Exception:
+        pass
+    print(f"Day 4-5 install check   build {build}")
     print("=" * 78)
     ok, stale, missing = [], [], []
 
@@ -157,7 +185,7 @@ def main() -> None:
         print("engine. Install the complete bundle — the zip, not individual files:")
         print()
         print("    cd ~/balance-velocity-engine")
-        print("    unzip -o ~/balance-velocity-engine-day5.zip")
+        print("    unzip -o ~/balance-velocity-engine-COMPLETE.zip")
         print("    chmod +x scripts/*.py scripts/*.sh scripts/chaos/*.sh")
         print("    python scripts/check_install.py")
         sys.exit(1)

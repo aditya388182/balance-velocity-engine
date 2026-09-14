@@ -1,0 +1,222 @@
+{
+  "uid": "p3-state-health",
+  "title": "Project 3 \u2014 State Health",
+  "tags": [
+    "project3"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "description": "Is per-account state bounded, and is the disaster-recovery window still short? Every panel binds to a metric name defined in spark/engine/metrics.py.",
+  "panels": [
+    {
+      "id": 1,
+      "title": "State rows (accounts held in state)",
+      "type": "timeseries",
+      "description": "ONE ROW PER ACCOUNT, not per buffered event. Rising without bound means TTL is not evicting; a fall is the eviction curve.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "p3_state_rows",
+          "legendFormat": "accounts",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "State size",
+      "type": "timeseries",
+      "description": "RocksDB's own estimate. Dominated by memtable and block-cache overhead, so treat it as a trend, not a payload measure.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "p3_state_bytes",
+          "legendFormat": "bytes",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Pending buffer p99, against the cap",
+      "type": "timeseries",
+      "description": "The reorder buffer. p99 above ~100 across many accounts means the watermark is too large or upstream is bursting out of order. A single account at the cap is a replay or an attack.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 100
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "p3_buffer_p99",
+          "legendFormat": "p99",
+          "refId": "A"
+        },
+        {
+          "expr": "p3_buffer_max",
+          "legendFormat": "max",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Accounts pinned at the cap",
+      "type": "timeseries",
+      "description": "Any non-zero value means events are being shed to the DLQ.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "p3_accounts_at_cap",
+          "legendFormat": "at cap",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Snapshot lag",
+      "type": "timeseries",
+      "description": "Seconds since the newest snapshot. A steadily rising line means the snapshot DAG has stopped and the corruption-recovery replay window is growing silently. Alert above 2x the cadence.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 900
+              },
+              {
+                "color": "red",
+                "value": 3600
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "p3_snapshot_lag_seconds",
+          "legendFormat": "lag",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

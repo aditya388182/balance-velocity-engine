@@ -29,7 +29,7 @@ services:
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:29092"]
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
       interval: 10s
       timeout: 10s
       retries: 15
@@ -76,7 +76,7 @@ services:
       timeout: 5s
       retries: 15
 
-  mc:
+  # Long-lived mc box: creates the buckets, then stays up so every script and the
     image: minio/mc:RELEASE.2024-06-12T14-34-03Z
     container_name: p3-mc
     depends_on:
@@ -91,6 +91,38 @@ services:
       tail -f /dev/null"
     mem_limit: 256m
 
+  pushgateway:
+    image: prom/pushgateway:v1.8.0
+    container_name: p3-pushgateway
+    ports:
+      - "9091:9091"
+    mem_limit: 128m
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: p3-prometheus
+    depends_on: [pushgateway]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    mem_limit: 512m
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: p3-grafana
+    depends_on: [prometheus]
+    ports:
+      - "3000:3000"          # http://localhost:3000  admin/admin
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    mem_limit: 512m
 
 volumes:
   kafka-data:
