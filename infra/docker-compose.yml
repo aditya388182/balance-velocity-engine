@@ -77,6 +77,7 @@ services:
       retries: 15
 
   # Long-lived mc box: creates the buckets, then stays up so every script and the
+  mc:
     image: minio/mc:RELEASE.2024-06-12T14-34-03Z
     container_name: p3-mc
     depends_on:
