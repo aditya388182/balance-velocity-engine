@@ -22,8 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      - name: Assert STATE_SCHEMA is unchanged
-        run: grep "STATE_SCHEMA" spark/engine/sequencer.py || exit 1
+      - name: STATE_SCHEMA guard
+        run: grep "STATE_SCHEMA =" spark/engine/sequencer.py || exit 1
 
   sigkill-recovery:
     name: Real SIGKILL Recovery
