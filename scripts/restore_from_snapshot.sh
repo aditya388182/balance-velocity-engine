@@ -58,8 +58,17 @@ echo "    restored to checkpoints/${RESTORE_TAG}/"
 
 echo "==> restarting against the restored path; Kafka replay is bounded by the"
 echo "    offsets inside the snapshot, not by 'earliest'"
+LOG_MARK=$(wc -l < logs/engine.log 2>/dev/null || echo 0)
 P3_SPARK_VERSION_TAG="$RESTORE_TAG" start_engine || {
   echo "ERROR: the engine did not restart" >&2; tail -30 logs/engine.log >&2; exit 1; }
+# Read only this lifetime's lines — the log is appended across every restart.
+RESTORED_CKPT=$(tail -n +$((LOG_MARK+1)) logs/engine.log | grep -m1 "\[engine\] checkpoint" || true)
+echo "    ${RESTORED_CKPT:-<no checkpoint line yet>}"
+if [[ "$RESTORED_CKPT" != *"$RESTORE_TAG"* ]]; then
+  echo "ERROR: the engine is not on the RESTORED path checkpoints/${RESTORE_TAG}/." >&2
+  echo "       It may have resumed the corrupt checkpoint instead." >&2
+  exit 1
+fi
 
 python scripts/wait_for_drain.py --query balance_engine --timeout 300 --stable-seconds 25 \
   || echo "    (drain wait did not confirm; continuing to parity)"
@@ -67,8 +76,10 @@ stop_engine
 T_RECOVER=$(( $(date +%s) - T_START ))
 
 echo "==> parity after recovery"
+# Same as the upgrade drill: restoring a snapshot re-reads Kafka from the
+# snapshot's offsets, so the drop branch fires on every re-read event.
 OK=1
-python scripts/parity_balance.py || OK=0
+python scripts/parity_balance.py --expect-replay || OK=0
 echo "==> T_recover with snapshot: ${T_RECOVER}s"
 
 if [[ "$MEASURE_BASELINE" -eq 1 ]]; then

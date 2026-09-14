@@ -127,6 +127,12 @@ CHECKS = {
     "infra/docker-compose.yml": (
         "start_period: 90s",
         "Kafka healthcheck start_period + the observability profile"),
+    "infra/docker-compose.yml#2": (
+        'PLAINTEXT://0.0.0.0:9092',
+        "LISTENERS bind 0.0.0.0 — a hostname there binds ONE address only"),
+    "scripts/doctor_stack.sh#2": (
+        "which ADDRESS does it answer on",
+        "the doctor tests every address, not just localhost:9092"),
     "scripts/doctor_stack.sh": (
         "one of the least informative errors", "the stack doctor"),
     "conf/engine_config.yml": (
@@ -135,6 +141,12 @@ CHECKS = {
     "scripts/corrupt_checkpoint.sh": ("truncates files", "the corruption injector"),
     "scripts/restore_from_snapshot.sh": ("never over the corpse", "Drill 1"),
     "scripts/upgrade_dual_run.sh": ("NEVER reads old-format state", "Drill 2"),
+    "scripts/upgrade_dual_run.sh#2": (
+        "LOG_MARK", "reads only the NEW job's log lines and asserts the new path"),
+    "scripts/restore_from_snapshot.sh#2": (
+        "expect-replay", "parity told that a snapshot restore re-reads Kafka"),
+    "scripts/parity_balance.py#3": (
+        "--expect-replay", "a deliberate replay's dup records are not a mismatch"),
     "scripts/final_audit.py": ("completion audit", "the final audit"),
     "scripts/verify_day6.py": ("more easily-missed question", "the cross-reference verifier"),
     "infra/grafana/dashboards/state_health.json": ("p3_state_rows", "State Health dashboard"),

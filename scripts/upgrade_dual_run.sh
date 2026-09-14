@@ -41,11 +41,28 @@ stop_all
 rm -f run/engine.pid
 
 echo "==> starting the NEW job on the new versioned path"
+# Mark where this job's output begins. logs/engine.log is APPENDED across every
+# lifetime, so `grep -m1` returns the FIRST match in the whole file — the OLD
+# job's startup line from minutes earlier. Reporting that as the new job's
+# checkpoint path is how a working drill reads as a broken one.
+LOG_MARK=$(wc -l < logs/engine.log 2>/dev/null || echo 0)
+
 P3_SPARK_VERSION_TAG="$NEW_TAG" P3_VELOCITY_ENABLED=0 \
   nohup python spark/jobs/balance_engine.py >> logs/engine.log 2>&1 &
 for _ in $(seq 1 90); do [[ -f run/engine.pid ]] && break; sleep 2; done
 [[ -f run/engine.pid ]] || { echo "ERROR: new job did not start" >&2; tail -30 logs/engine.log >&2; exit 1; }
-grep -m1 "checkpoint" logs/engine.log || true
+
+# ...and read only the lines THIS job wrote.
+NEW_CKPT=$(tail -n +$((LOG_MARK+1)) logs/engine.log | grep -m1 "\[engine\] checkpoint" || true)
+echo "    ${NEW_CKPT:-<no checkpoint line yet>}"
+if [[ "$NEW_CKPT" != *"$NEW_TAG"* ]]; then
+  echo "ERROR: the new job is NOT on checkpoints/${NEW_TAG}/." >&2
+  echo "       P3_SPARK_VERSION_TAG did not reach the process. Without that, the" >&2
+  echo "       drill is silently re-running the old job and proves nothing." >&2
+  tail -n +$((LOG_MARK+1)) logs/engine.log | head -20 >&2
+  exit 1
+fi
+echo "    confirmed: the new job is on the NEW versioned path"
 
 echo "==> parity window (${PARITY_WINDOW}s; production: 24h)"
 python scripts/wait_for_drain.py --query balance_engine --timeout 300 --stable-seconds 25 \
@@ -54,8 +71,13 @@ sleep "$PARITY_WINDOW"
 stop_all
 
 echo "==> validating the new path against the oracle"
+# --expect-replay: seeding from a snapshot means re-reading Kafka from the
+# snapshot's offsets, so every re-read event hits seq <= last and is dropped WITH
+# A RECORD. The delivery log contains no duplicates, so it cannot predict those.
+# Balance, last_applied_seq and applied-count are still compared exactly — a real
+# double-apply would still fail here.
 OK=1
-python scripts/parity_balance.py || OK=0
+python scripts/parity_balance.py --expect-replay || OK=0
 
 echo "==> cutover"
 echo "    new job is primary; the old path is retired to cold storage and deleted"

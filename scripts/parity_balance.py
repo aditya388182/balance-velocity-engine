@@ -85,6 +85,14 @@ def main() -> None:
                         "heartbeat traffic under a SEPARATE delivery log will otherwise "
                         "report those accounts as 'the oracle never saw' — true, and "
                         "not a defect.")
+    p.add_argument("--expect-replay", action="store_true",
+                   help="this run deliberately re-read Kafka (a snapshot restore or "
+                        "an upgrade seed). Every re-read event hits seq <= last and "
+                        "is dropped WITH A RECORD, so the engine emits DUP_DROPPED "
+                        "rows the delivery log cannot predict — it has no duplicates "
+                        "in it. Extra dups are permitted; MISSING ones still fail, "
+                        "and balance / last_applied_seq / applied-count are compared "
+                        "exactly as always. A real double-apply still shows up.")
     p.add_argument("--strict", action="store_true",
                    help="fail on accounts the oracle marks INDETERMINATE instead of "
                         "reporting them as uncomparable")
@@ -94,6 +102,10 @@ def main() -> None:
                    help="Stage 1: assert every account fully drained (buffer_size == 0)")
     p.add_argument("--expect-no-integrity", action="store_true",
                    help="Stage 1 shuffle run: nothing was lost, only late")
+    # Day 1's flag. The `deferred` counter it referred to was a Day-1 scaffold that
+    # branches 2-4 have now claimed, so the equivalent assertion is "no integrity
+    # events at all". Accepted as an alias so every command in the Day 1 plan still
+    # runs against Day 2 code.
     p.add_argument("--expect-zero-deferred", action="store_true",
                    help="Day 1 alias for --expect-no-integrity")
     p.add_argument("--save-state", default=None,
@@ -129,6 +141,7 @@ def main() -> None:
     failures = []
     snapshot = {}
     indeterminate = []
+    replay_dups = []
     empty_integ = {"dup": set(), "overflow": set(), "gap_ranges": set(), "dup_paths": {}}
 
     scope = set(args.only_account) if args.only_account else None
@@ -187,10 +200,20 @@ def main() -> None:
                              f"(derived from balances + integrity)")
 
         o_dups = set(o["expected_dup_dropped"])
-        if integ["dup"] != o_dups:
-            missing = sorted(o_dups - integ["dup"])[:10]
-            extra = sorted(integ["dup"] - o_dups)[:10]
-            acct_fail.append(f"DUP_DROPPED set mismatch (missing={missing} extra={extra})")
+        missing_dups = o_dups - integ["dup"]
+        extra_dups = integ["dup"] - o_dups
+        if args.expect_replay:
+            # Extra dups are the drop branch doing its job on a deliberate replay.
+            if missing_dups:
+                acct_fail.append(f"DUP_DROPPED missing {sorted(missing_dups)[:10]} — "
+                                 f"a duplicate the delivery log DOES predict was not "
+                                 f"dropped")
+            elif extra_dups:
+                replay_dups.append((acct, len(extra_dups)))
+        elif integ["dup"] != o_dups:
+            acct_fail.append(f"DUP_DROPPED set mismatch "
+                             f"(missing={sorted(missing_dups)[:10]} "
+                             f"extra={sorted(extra_dups)[:10]})")
 
         if o["overflow_determinate"]:
             o_ovf = set(o["expected_overflow_evicted"])
@@ -237,6 +260,17 @@ def main() -> None:
         print("duplicate drop paths exercised: "
               + ", ".join(f"{k}={v}" for k, v in sorted(dup_paths.items())))
 
+    if replay_dups:
+        total = sum(n for _a, n in replay_dups)
+        print()
+        print(f"{GREEN}REPLAY ABSORBED{RESET} — {total} event(s) re-read and dropped "
+              f"with a record across {len(replay_dups)} account(s)")
+        print(f"  {DIM}The delivery log has no duplicates in it; these came from the "
+              f"engine re-reading Kafka after a snapshot restore. Each one hit")
+        print(f"  seq <= last and was dropped. Balance and last_applied_seq are "
+              f"compared exactly as always, so a real double-apply would still "
+              f"fail here.{RESET}")
+
     if indeterminate:
         print()
         print(f"{YELLOW}{len(indeterminate)} account(s) UNCOMPARABLE{RESET}: "
@@ -271,6 +305,16 @@ def main() -> None:
                   f"for all {len(snapshot)} account(s)")
 
     if failures:
+        only_extra_dups = all("DUP_DROPPED set mismatch" in f and "missing=[]" in f
+                              for f in failures)
+        if only_extra_dups and not args.expect_replay:
+            print(f"{YELLOW}every mismatch is EXTRA DUP_DROPPED rows and nothing "
+                  f"else{RESET} — balance and last_applied_seq agree.")
+            print(f"  {DIM}That is the signature of a deliberate replay: a snapshot "
+                  f"restore or an upgrade seed re-reads Kafka, and every re-read "
+                  f"event is dropped with a record. The delivery log cannot predict "
+                  f"them because it contains no duplicates.")
+            print(f"  Re-run with --expect-replay.{RESET}")
         print(f"{RED}PARITY FAIL{RESET} — {len(failures)} mismatch(es):")
         for f in failures:
             print(f"  - {f}")
