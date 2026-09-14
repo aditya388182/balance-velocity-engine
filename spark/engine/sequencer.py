@@ -241,3 +241,4 @@ def make_sequencer(cfg: Dict[str, Any]):
         yield pd.DataFrame(rows, columns=OUTPUT_COLUMNS).astype(OUTPUT_DTYPES)
 
     return sequencer
+# STATE_SCHEMA = v3.5.1
