@@ -40,6 +40,8 @@ def main() -> None:
                    help="silence that counts as idle. Scaled up automatically to 3x "
                         "the last batch's duration, so a slow batch in progress is "
                         "not mistaken for a finished query.")
+    p.add_argument("--allow-no-progress", action="store_true",
+                   help="Allow the waiter to succeed even if no new data was processed")
     args = p.parse_args()
 
     path = Path(args.progress_file)
