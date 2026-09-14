@@ -1,0 +1,54 @@
+{
+  "name": "hold_policy",
+  "description": "The same hole under HOLD. Nothing after the gap applies, successors keep buffering against the cap, and the gap is still reported.",
+  "config": {
+    "max_buffer_size": 1000,
+    "gap_policy": "HOLD",
+    "watermark_delay_ms": 30000,
+    "gap_realert_ms": 60000
+  },
+  "amount_per_event": 100,
+  "phases": [
+    {
+      "batch": [
+        1,
+        2
+      ]
+    },
+    {
+      "batch": [
+        4
+      ]
+    },
+    {
+      "batch": [
+        5
+      ]
+    },
+    {
+      "timeout": {
+        "watermark_ms": 9999999
+      }
+    }
+  ],
+  "expect": {
+    "last_applied_seq": 2,
+    "balance_minor": 200,
+    "buffer": [
+      4,
+      5
+    ],
+    "DUP_DROPPED": [],
+    "BUFFER_OVERFLOW": [],
+    "SEQUENCE_GAP": [
+      3
+    ],
+    "gap_ranges": [
+      [
+        3,
+        3,
+        1
+      ]
+    ]
+  }
+}

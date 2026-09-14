@@ -1,0 +1,94 @@
+{
+  "name": "overflow",
+  "description": "Cap 5, seqs 2..12 with the head withheld so nothing can drain. The buffer pins at the cap holding the k LARGEST, evictions are min-first, and then seq 1 arrives: only seq 1 applies, because 2..7 were evicted so the run is no longer contiguous.",
+  "config": {
+    "max_buffer_size": 5,
+    "gap_policy": "FLAG_AND_CONTINUE",
+    "watermark_delay_ms": 30000,
+    "gap_realert_ms": 60000
+  },
+  "amount_per_event": 100,
+  "phases": [
+    {
+      "batch": [
+        2
+      ]
+    },
+    {
+      "batch": [
+        3
+      ]
+    },
+    {
+      "batch": [
+        4
+      ]
+    },
+    {
+      "batch": [
+        5
+      ]
+    },
+    {
+      "batch": [
+        6
+      ]
+    },
+    {
+      "batch": [
+        7
+      ]
+    },
+    {
+      "batch": [
+        8
+      ]
+    },
+    {
+      "batch": [
+        9
+      ]
+    },
+    {
+      "batch": [
+        10
+      ]
+    },
+    {
+      "batch": [
+        11
+      ]
+    },
+    {
+      "batch": [
+        12
+      ]
+    },
+    {
+      "batch": [
+        1
+      ]
+    }
+  ],
+  "expect": {
+    "last_applied_seq": 1,
+    "balance_minor": 100,
+    "buffer": [
+      8,
+      9,
+      10,
+      11,
+      12
+    ],
+    "DUP_DROPPED": [],
+    "BUFFER_OVERFLOW": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "SEQUENCE_GAP": []
+  }
+}

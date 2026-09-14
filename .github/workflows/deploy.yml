@@ -1,0 +1,16 @@
+name: Deploy Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  package-and-publish:
+    name: Package Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Package artifacts
+        run: zip -r release.zip spark/ conf/ scripts/
+      - name: Add Release Note
+        run: echo "Deployed via automated GitHub Actions release"

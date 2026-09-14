@@ -1,0 +1,51 @@
+{
+  "name": "gap",
+  "description": "Seq 3 never arrives. Before the watermark confirms it, 4 and 5 simply buffer \u2014 buffered is not the same as lost. After the timeout, ONE coalesced range (3,3) and FLAG_AND_CONTINUE steps over it, so the balance excludes seq 3.",
+  "config": {
+    "max_buffer_size": 1000,
+    "gap_policy": "FLAG_AND_CONTINUE",
+    "watermark_delay_ms": 30000,
+    "gap_realert_ms": 60000
+  },
+  "amount_per_event": 100,
+  "phases": [
+    {
+      "batch": [
+        1,
+        2
+      ]
+    },
+    {
+      "batch": [
+        4
+      ]
+    },
+    {
+      "batch": [
+        5
+      ]
+    },
+    {
+      "timeout": {
+        "watermark_ms": 9999999
+      }
+    }
+  ],
+  "expect": {
+    "last_applied_seq": 5,
+    "balance_minor": 400,
+    "buffer": [],
+    "DUP_DROPPED": [],
+    "BUFFER_OVERFLOW": [],
+    "SEQUENCE_GAP": [
+      3
+    ],
+    "gap_ranges": [
+      [
+        3,
+        3,
+        1
+      ]
+    ]
+  }
+}

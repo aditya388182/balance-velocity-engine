@@ -1,0 +1,173 @@
+# infra/docker-compose.yml
+# Kafka (KRaft, no ZooKeeper) + Schema Registry + MinIO + a long-lived mc utility box.
+#
+# NO Postgres / Kafka Connect / Debezium: this project's producer is a Python
+# generator, not CDC. In production this engine reads the same payments topic
+# Project 1 populates; locally the generator stands in so that seq_no scenarios
+# (gap, duplicate, shuffle, burst) are scriptable. The swap is about ten lines.
+name: p3-balance-engine
+
+services:
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: p3-kafka
+    hostname: kafka
+    ports:
+      - "29092:29092"
+    environment:
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
+      # LISTENERS and ADVERTISED_LISTENERS mean DIFFERENT things and must not be
+      # given the same values:
+      #
+      #   LISTENERS            the addresses the broker BINDS to
+      #   ADVERTISED_LISTENERS the addresses the broker TELLS CLIENTS to use
+      #
+      # "PLAINTEXT://kafka:9092" as a LISTENER makes Kafka resolve the hostname and
+      # bind to THAT ADDRESS ONLY — the container's eth0 IP. 127.0.0.1:9092 is then
+      # not listening at all, so any in-container probe aimed at localhost:9092 gets
+      # connection-refused while the broker is perfectly healthy. The asymmetry with
+      # PLAINTEXT_HOST, which was already 0.0.0.0 and always worked, is the tell.
+      #
+      # Bind everywhere; advertise the routable names.
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx768m"
+    # A JVM's RSS is heap PLUS metaspace, thread stacks, direct buffers, code cache
+    # and GC structures — roughly 350-500 MB for Kafka on top of the heap. Setting
+    # mem_limit anywhere near the heap size gets the broker OOM-killed mid-startup,
+    # which presents as "unhealthy" and looks nothing like a memory problem.
+    mem_limit: 1400m
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      # kafka-broker-api-versions launches a FRESH JVM on every probe. That costs
+      # 5-15 s on a small instance, and once the observability containers are
+      # competing for CPU it routinely exceeds a 10 s timeout — so the probe fails
+      # while the broker itself is perfectly healthy.
+      #
+      # The cheap TCP check runs first and costs nothing; the API call only has to
+      # succeed once the port is already accepting connections.
+      # Probe 29092: PLAINTEXT_HOST has always been bound to 0.0.0.0, so this
+      # works regardless of how the internal listener is configured. The TCP
+      # pre-check costs nothing and avoids launching a JVM until the port answers.
+      test: ["CMD-SHELL",
+             "bash -c 'exec 3<>/dev/tcp/localhost/29092' && kafka-broker-api-versions --bootstrap-server localhost:29092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 25s
+      retries: 20
+      # Failures during start_period do not count against retries. A cold KRaft
+      # broker formatting its log directory legitimately takes 30-60 s.
+      start_period: 90s
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.1
+    container_name: p3-schema-registry
+    hostname: schema-registry
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: "kafka:9092"
+      SCHEMA_REGISTRY_LISTENERS: "http://0.0.0.0:8081"
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 1
+      SCHEMA_REGISTRY_HEAP_OPTS: "-Xms256m -Xmx512m"
+    mem_limit: 800m
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/subjects"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  minio:
+    image: minio/minio:RELEASE.2024-06-13T22-53-53Z
+    container_name: p3-minio
+    hostname: minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"     # S3 API. If macOS AirPlay holds 9000: change to "9010:9000"
+      - "9001:9001"     # console — http://localhost:9001  (minioadmin / minioadmin)
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    mem_limit: 800m
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+
+  # Long-lived mc box: creates the buckets, then stays up so every script and the
+  mc:
+    image: minio/mc:RELEASE.2024-06-12T14-34-03Z
+    container_name: p3-mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://minio:9000 minioadmin minioadmin; do sleep 2; done;
+      mc mb --ignore-existing local/balance-lake;
+      mc mb --ignore-existing local/state-snapshots;
+      echo 'buckets ready'; mc ls local;
+      tail -f /dev/null"
+    mem_limit: 256m
+
+  pushgateway:
+    image: prom/pushgateway:v1.8.0
+    container_name: p3-pushgateway
+    profiles: ["observability"]
+    ports:
+      - "9091:9091"
+    mem_limit: 128m
+
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: p3-prometheus
+    profiles: ["observability"]
+    depends_on: [pushgateway]
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    mem_limit: 512m
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: p3-grafana
+    profiles: ["observability"]
+    depends_on: [prometheus]
+    ports:
+      - "3000:3000"          # http://localhost:3000  admin/admin
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: light
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    mem_limit: 512m
+
+volumes:
+  kafka-data:
+  minio-data:

@@ -1,0 +1,13 @@
+{
+  "type": "record",
+  "name": "AccountEvent",
+  "namespace": "accounts",
+  "doc": "One movement on an account. amount_minor is SIGNED: CREDIT positive, DEBIT negative. seq_no is strictly monotonic per account, starting at 1.",
+  "fields": [
+    { "name": "account_id",   "type": "string" },
+    { "name": "seq_no",       "type": "long" },
+    { "name": "amount_minor", "type": "long" },
+    { "name": "event_type",   "type": { "type": "enum", "name": "EvType", "symbols": ["DEBIT", "CREDIT"] } },
+    { "name": "event_ts",     "type": { "type": "long", "logicalType": "timestamp-millis" } }
+  ]
+}

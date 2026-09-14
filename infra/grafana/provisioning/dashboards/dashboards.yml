@@ -1,0 +1,12 @@
+apiVersion: 1
+providers:
+  - name: project3
+    orgId: 1
+    folder: "Project 3"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 15
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

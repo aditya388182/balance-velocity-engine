@@ -1,0 +1,176 @@
+{
+  "uid": "p3-integrity-signals",
+  "title": "Project 3 \u2014 Integrity Signals",
+  "tags": [
+    "project3"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "description": "Is the ledger losing, duplicating or shedding events? These are the four things that mean money is at risk.",
+  "panels": [
+    {
+      "id": 1,
+      "title": "SEQUENCE_GAP rate",
+      "type": "timeseries",
+      "description": "Confirmed losses, not reorders. A spike is almost always upstream: correlate with Kafka partition lag BEFORE declaring data loss. See runbooks/gap_alert_storm.md.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "p3_gap_rate",
+          "legendFormat": "gaps/batch",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "DUP_DROPPED rate",
+      "type": "timeseries",
+      "description": "Replays the engine absorbed. Non-zero is HEALTHY during a recovery \u2014 it is the drop branch doing its job. Sustained non-zero in steady state means an upstream retry loop.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "p3_dup_dropped",
+          "legendFormat": "dups/batch",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "BUFFER_OVERFLOW rate (DLQ)",
+      "type": "timeseries",
+      "description": "Events shed to the DLQ to bound memory. Alert above 0.01% of throughput. Every one of these is real value sitting in accounts.dlq awaiting reconciliation.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "p3_overflow_rate",
+          "legendFormat": "evictions/batch",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "TTL_FLUSH rate",
+      "type": "timeseries",
+      "description": "Idle accounts released. Expected and healthy. A sudden spike means a traffic stall, not a state problem.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PROM"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "p3_ttl_flush",
+          "legendFormat": "evictions/batch",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}
