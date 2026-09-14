@@ -1,4 +1,24 @@
 #!/usr/bin/env bash
+# scripts/release_head_drill.sh — Stage 5's closing argument, self-contained.
+#
+# Releases the withheld head AFTER the gap has been confirmed, and proves the
+# watermark's verdict is final: the event is dropped with a record and the balance
+# does not move.
+#
+# WHY IT IS SELF-CONTAINED
+# ------------------------
+# Two things went wrong running this by hand:
+#
+#   1. --run-id started a NEW delivery log, so parity built its oracle from ONE
+#      event and reported the engine's entire history as a mismatch. The oracle
+#      needs the account's full delivery history, which is what --append-to gives it.
+#   2. It was run against the UNCAPPED state, where everything had already drained.
+#      The demo has to follow a CAPPED run to mean anything.
+#
+# Rather than leave both as instructions to get right, the drill sets up its own
+# capped run and appends to its own log.
+#
+#   ./scripts/release_head_drill.sh
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -17,6 +37,13 @@ done
 
 # shellcheck disable=SC1091
 [ -d .venv ] && source .venv/bin/activate
+
+BUILD="$(cat "$REPO_ROOT/BUILD" 2>/dev/null || echo "UNKNOWN")"
+echo "### $(basename "$0")  build ${BUILD}"
+if [[ "$BUILD" == "UNKNOWN" ]]; then
+  echo "### WARNING: no BUILD file — this tree predates build tagging" >&2
+fi
+
 mkdir -p logs run
 
 # Fail fast rather than half-run. A missing helper five minutes in wastes the
@@ -43,7 +70,7 @@ trap stop_engine EXIT
 
 start_and_wait () {
   rm -f run/engine.pid
-  nohup python spark/jobs/balance_engine.py >> logs/engine.log 2>&1 &
+  PYTHONUNBUFFERED=1 nohup python spark/jobs/balance_engine.py >> logs/engine.log 2>&1 &
   for _ in $(seq 1 90); do [[ -f run/engine.pid ]] && break; sleep 2; done
   [[ -f run/engine.pid ]] || { echo "engine never became ready" >&2; tail -30 logs/engine.log >&2; exit 1; }
   # and wait for a COMMITTED batch, not merely a live process
@@ -76,6 +103,12 @@ python scripts/event_generator.py --accounts 1 --account-prefix TICK- \
 sleep 45
 
 echo "==> full parity BEFORE the release, while the oracle can still model the run"
+# Ordering matters. With the head withheld the oracle is DETERMINATE: min-first
+# eviction retains the k largest, so it predicts the survivors exactly. The moment
+# seq 1 is appended, head_withheld becomes false, the oracle switches to its
+# "appliable head" branch, and its balance is computed as though nothing had been
+# evicted. Comparing after the append turns the oracle's own admission of
+# uncertainty into a FAIL. So compare first, release second.
 OK=1
 python scripts/parity_balance.py --delivery-log "$LOG" --only-account HOT-1 || OK=0
 

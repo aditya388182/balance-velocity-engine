@@ -1,4 +1,24 @@
 #!/usr/bin/env bash
+# scripts/stage5_proof.sh — the capped/uncapped contrast, end to end, one command.
+#
+# WHAT CHANGED FROM THE MANUAL SEQUENCE
+# -------------------------------------
+# Two things made the hand-run version report a false failure.
+#
+# 1. The burst alone never reaches a terminal state under the cap. The gap alarm is
+#    armed at the EARLIEST buffered event_ts, and min-first eviction discards the
+#    oldest-event-time entries — so the capped run holds only the newest events and
+#    its alarm sits ~90s further forward in event time than the uncapped run's. The
+#    uncapped run's gap fires and drains; the capped run's does not, and the two are
+#    then compared in different states. This script pushes event time forward with a
+#    tick run so BOTH runs reach the same terminal state before anything is read.
+#
+# 2. The burst's event-time span is shortened (--event-time-step-ms 2, so 10,000
+#    events span 20s instead of 100s) which brings the capped run's alarm within
+#    reach of a 90-second tick rather than needing two minutes of wall clock.
+#
+#   ./scripts/stage5_proof.sh              # both runs
+#   ./scripts/stage5_proof.sh --only capped
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -18,6 +38,13 @@ done
 
 # shellcheck disable=SC1091
 [ -d .venv ] && source .venv/bin/activate
+
+BUILD="$(cat "$REPO_ROOT/BUILD" 2>/dev/null || echo "UNKNOWN")"
+echo "### $(basename "$0")  build ${BUILD}"
+if [[ "$BUILD" == "UNKNOWN" ]]; then
+  echo "### WARNING: no BUILD file — this tree predates build tagging" >&2
+fi
+
 mkdir -p logs run
 
 stop_engine () {
@@ -42,9 +69,9 @@ run_one () {
 
   echo "==> start engine (${capenv:-default cap})"
   if [[ -n "$capenv" ]]; then
-    env "$capenv" nohup python spark/jobs/balance_engine.py >> logs/engine.log 2>&1 &
+    env "$capenv" PYTHONUNBUFFERED=1 nohup python spark/jobs/balance_engine.py >> logs/engine.log 2>&1 &
   else
-    nohup python spark/jobs/balance_engine.py >> logs/engine.log 2>&1 &
+    PYTHONUNBUFFERED=1 nohup python spark/jobs/balance_engine.py >> logs/engine.log 2>&1 &
   fi
   wait_ready
   grep -m1 "max_buffer_size" logs/engine.log || true

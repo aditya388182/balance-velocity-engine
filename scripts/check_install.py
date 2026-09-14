@@ -143,6 +143,14 @@ CHECKS = {
     "scripts/upgrade_dual_run.sh": ("NEVER reads old-format state", "Drill 2"),
     "scripts/upgrade_dual_run.sh#2": (
         "LOG_MARK", "reads only the NEW job's log lines and asserts the new path"),
+    "scripts/upgrade_dual_run.sh#3": (
+        "wait_for_ckpt_line", "waits for the banner instead of sampling once"),
+    "scripts/restore_from_snapshot.sh#3": (
+        "wait_for_ckpt_line", "waits for the banner instead of sampling once"),
+    "spark/jobs/balance_engine.py#3": (
+        "_banner", "startup lines are flushed before the pid file appears"),
+    "scripts/run_engine.sh": (
+        "PYTHONUNBUFFERED=1", "the engine's stdout is unbuffered at every launch"),
     "scripts/restore_from_snapshot.sh#2": (
         "expect-replay", "parity told that a snapshot restore re-reads Kafka"),
     "scripts/parity_balance.py#3": (

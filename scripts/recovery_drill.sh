@@ -1,4 +1,31 @@
 #!/usr/bin/env bash
+# scripts/recovery_drill.sh — the exactly-once recovery drill, one command.
+#
+#   reset -> start engine -> publish -> SIGKILL mid-stream -> restart -> drain
+#         -> parity -> replay evidence
+#
+# WHAT MUST HOLD, AND WHY (the log paragraph writes itself from this chain)
+# ------------------------------------------------------------------------
+# RocksDB state and Kafka offsets live in the SAME checkpoint and restore
+# atomically, so the restarted job resumes with last_applied_seq exactly
+# consistent with the offsets it will re-read. Batch N re-executes against state
+# version N-1 and produces the same result. The replayed foreachBatch body hits
+# the strict-> MERGE guard as a no-op. Three independent layers said no.
+#
+# Note what this does NOT mean: during a clean recovery the state machine's
+# duplicate branch does not engage, because the state rolled back with the
+# offsets. Expecting recovery-caused DUP_DROPPED records is a misreading of how
+# Spark checkpoints — see scripts/replay_evidence.py.
+#
+#   ./scripts/recovery_drill.sh --gen "--accounts 5 --rate 40 --duration 90 --shuffle-window 20 --seed 7"
+#
+# Flags:
+#   --gen        "..."  generator args (required)
+#   --parity     "..."  extra parity args
+#   --kill-after N      seconds after publishing starts before the SIGKILL (default 25)
+#   --drain      N      seconds to settle after restart (default 60)
+#   --attempts   N      retry the whole drill until a SINK replay is observed (default 1)
+#   --no-reset          keep the existing lake/topics
 set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -20,11 +47,18 @@ done
 
 # shellcheck disable=SC1091
 [ -d .venv ] && source .venv/bin/activate
+
+BUILD="$(cat "$REPO_ROOT/BUILD" 2>/dev/null || echo "UNKNOWN")"
+echo "### $(basename "$0")  build ${BUILD}"
+if [[ "$BUILD" == "UNKNOWN" ]]; then
+  echo "### WARNING: no BUILD file — this tree predates build tagging" >&2
+fi
+
 mkdir -p logs run
 
 start_engine () {
   rm -f run/engine.pid
-  nohup python spark/jobs/balance_engine.py >> logs/engine.log 2>&1 &
+  PYTHONUNBUFFERED=1 nohup python spark/jobs/balance_engine.py >> logs/engine.log 2>&1 &
   local launcher=$!
   for _ in $(seq 1 90); do
     [[ -f run/engine.pid ]] && return 0

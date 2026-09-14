@@ -1,4 +1,23 @@
 #!/usr/bin/env bash
+# scripts/stage_run.sh — one-command stage choreography.
+#
+#   reset -> start engine -> wait ready -> publish -> drain -> stop engine -> parity
+#
+# Every stage this week is one line and is reproducible from a clean slate.
+# Day 4's recovery_drill.sh is this script with a SIGKILL wedged into the middle,
+# which is why the readiness-wait and the drain-wait are factored the way they are.
+#
+#   ./scripts/stage_run.sh --gen "--accounts 3 --ordered --rate 30 --duration 60 --seed 7" \
+#                          --parity "--expect-empty-buffer" --drain 45
+#
+# Flags:
+#   --gen     "..."   passthrough args for event_generator.py   (required)
+#   --parity  "..."   passthrough args for parity_balance.py    (default: none)
+#   --drain   N       seconds to let the engine settle after the generator ends (default 45)
+#   --no-reset        keep the existing lake/topics
+#   --no-parity       stop before parity (mechanism-only exercises, e.g. Block 2.5)
+#   --probe   "..."   run gap_timing_probe.py after parity with these args
+#   --keep-running    leave the engine up after the run
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,7 +60,7 @@ stop_engine () {
     local pid; pid="$(cat run/engine.pid)"
     if kill -0 "$pid" 2>/dev/null; then
       # SIGTERM: a graceful shutdown checkpoints cleanly, which is what you want
-      # BETWEEN stages.v4 drill uses SIGKILL precisely because a clean
+      # BETWEEN stages. Day 4's drill uses SIGKILL precisely because a clean
       # shutdown proves nothing about recovery.
       echo "==> stopping engine gracefully (SIGTERM) pid=$pid"
       kill -TERM "$pid" 2>/dev/null || true
@@ -69,7 +88,7 @@ rm -f run/engine.pid
 # The probe reads logs/progress.jsonl. A stale file from a previous run would let
 # it resolve a batch_id against the wrong timeline, so it is truncated with the log.
 : > logs/progress.jsonl
-nohup python spark/jobs/balance_engine.py > logs/engine.log 2>&1 &
+PYTHONUNBUFFERED=1 nohup python spark/jobs/balance_engine.py > logs/engine.log 2>&1 &
 LAUNCHER=$!
 echo "$LAUNCHER" > run/engine.launcher.pid
 

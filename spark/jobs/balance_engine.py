@@ -40,7 +40,7 @@ def ensure_balances_table(spark) -> None:
               "buffer_size INT, detail STRING, batch_id BIGINT, updated_at TIMESTAMP")
     (spark.createDataFrame([], schema)
      .write.format("delta").mode("overwrite").save(path))
-    print(f"[engine] balances    : created empty at {path}")
+    print(f"[engine] balances    : created empty at {path}", flush=True)
 
 
 def _cleanup_pid(*_args):
@@ -51,18 +51,31 @@ def _cleanup_pid(*_args):
     sys.exit(0)
 
 
+def _banner(msg: str) -> None:
+    """Startup lines must reach the log BEFORE the pid file exists.
+
+    Every drill waits for run/engine.pid and then greps the log. The pid file is
+    written through a handle that closes immediately, but print() to a redirected
+    stdout is BLOCK-buffered — so ~300 bytes of startup banner sit in memory while
+    the drill reads an empty tail and concludes the engine is on the wrong path.
+    Flushing here, and PYTHONUNBUFFERED=1 at every launch site, closes that race
+    from both ends.
+    """
+    print(msg, flush=True)
+
+
 def main() -> None:
     spark = build_spark(CFG, app_name="balance-engine", streaming=True)
     assert_state_store_configured(spark)
     ensure_balances_table(spark)
 
     ckpt = checkpoint_path(CFG, "balance_engine")
-    print(f"[engine] checkpoint      : {ckpt}")
-    print(f"[engine] balances        : {CFG['paths']['balances']}")
-    print(f"[engine] watermark       : {CFG['watermark_delay']}")
-    print(f"[engine] trigger         : {CFG['trigger_interval']}")
-    print(f"[engine] max_buffer_size : {CFG['max_buffer_size']}")
-    print(f"[engine] gap_policy      : {CFG['gap_policy']}")
+    _banner(f"[engine] checkpoint      : {ckpt}")
+    _banner(f"[engine] balances        : {CFG['paths']['balances']}")
+    _banner(f"[engine] watermark       : {CFG['watermark_delay']}")
+    _banner(f"[engine] trigger         : {CFG['trigger_interval']}")
+    _banner(f"[engine] max_buffer_size : {CFG['max_buffer_size']}")
+    _banner(f"[engine] gap_policy      : {CFG['gap_policy']}")
 
     raw = (spark.readStream.format("kafka")
            .option("kafka.bootstrap.servers", CFG["kafka_bootstrap"])
@@ -88,10 +101,10 @@ def main() -> None:
         vel_queries = start_velocity_queries(
             events, CFG, lambda name: checkpoint_path(CFG, name))
         for q in vel_queries:
-            print(f"[engine] velocity    : {q.name}")
+            _banner(f"[engine] velocity    : {q.name}")
     else:
         vel_queries = []
-        print("[engine] velocity    : DISABLED (P3_VELOCITY_ENABLED=0)")
+        _banner("[engine] velocity    : DISABLED (P3_VELOCITY_ENABLED=0)")
 
     # ---- rejoin re-seed: a stream-static left join with the balances table ---
     # A returning account arrives with EMPTY state at seq 0 because TTL released
@@ -109,7 +122,7 @@ def main() -> None:
                            F.col("last_applied_seq").alias("opening_seq"),
                            F.col("balance_minor").alias("opening_balance")))
         events = events.join(F.broadcast(opening), on="account_id", how="left")
-        print("[engine] rejoin      : re-seed from balances enabled")
+        _banner("[engine] rejoin      : re-seed from balances enabled")
 
     seq_out = (events.groupBy("account_id")
                .applyInPandasWithState(
@@ -131,12 +144,12 @@ def main() -> None:
     # query.lastProgress, so the watermark per batch is written to a file it can.
     progress_path = REPO_ROOT / "logs" / "progress.jsonl"
     start_progress_writer([query] + vel_queries, str(progress_path), poll_seconds=1.0)
-    print(f"[engine] progress    : {progress_path}")
+    _banner(f"[engine] progress    : {progress_path}")
 
     PID_FILE.parent.mkdir(parents=True, exist_ok=True)
     PID_FILE.write_text(str(os.getpid()))
-    print(f"[engine] pid {os.getpid()} -> {PID_FILE}")
-    print("[engine] streaming; Ctrl-C or SIGTERM to stop")
+    _banner(f"[engine] pid {os.getpid()} -> {PID_FILE}")
+    _banner("[engine] streaming; Ctrl-C or SIGTERM to stop")
 
     signal.signal(signal.SIGTERM, _cleanup_pid)
 
