@@ -1,3 +1,10 @@
+# infra/docker-compose.yml
+# Kafka (KRaft, no ZooKeeper) + Schema Registry + MinIO + a long-lived mc utility box.
+#
+# NO Postgres / Kafka Connect / Debezium: this project's producer is a Python
+# generator, not CDC. In production this engine reads the same payments topic
+# Project 1 populates; locally the generator stands in so that seq_no scenarios
+# (gap, duplicate, shuffle, burst) are scriptable. The swap is about ten lines.
 name: p3-balance-engine
 
 services:
@@ -24,15 +31,30 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_RETENTION_HOURS: 168
-      KAFKA_HEAP_OPTS: "-Xms512m -Xmx1g"
-    mem_limit: 1600m
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx768m"
+    # A JVM's RSS is heap PLUS metaspace, thread stacks, direct buffers, code cache
+    # and GC structures — roughly 350-500 MB for Kafka on top of the heap. Setting
+    # mem_limit anywhere near the heap size gets the broker OOM-killed mid-startup,
+    # which presents as "unhealthy" and looks nothing like a memory problem.
+    mem_limit: 1400m
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
-      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      # kafka-broker-api-versions launches a FRESH JVM on every probe. That costs
+      # 5-15 s on a small instance, and once the observability containers are
+      # competing for CPU it routinely exceeds a 10 s timeout — so the probe fails
+      # while the broker itself is perfectly healthy.
+      #
+      # The cheap TCP check runs first and costs nothing; the API call only has to
+      # succeed once the port is already accepting connections.
+      test: ["CMD-SHELL",
+             "bash -c 'exec 3<>/dev/tcp/localhost/9092' && kafka-broker-api-versions --bootstrap-server localhost:9092 >/dev/null 2>&1"]
       interval: 10s
-      timeout: 10s
-      retries: 15
+      timeout: 25s
+      retries: 20
+      # Failures during start_period do not count against retries. A cold KRaft
+      # broker formatting its log directory legitimately takes 30-60 s.
+      start_period: 90s
 
   schema-registry:
     image: confluentinc/cp-schema-registry:7.6.1
@@ -53,8 +75,9 @@ services:
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8081/subjects"]
       interval: 10s
-      timeout: 5s
-      retries: 15
+      timeout: 10s
+      retries: 20
+      start_period: 60s
 
   minio:
     image: minio/minio:RELEASE.2024-06-13T22-53-53Z
@@ -73,10 +96,12 @@ services:
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 10s
-      timeout: 5s
-      retries: 15
+      timeout: 10s
+      retries: 20
+      start_period: 30s
 
   # Long-lived mc box: creates the buckets, then stays up so every script and the
+  # Day-5 Airflow snapshot DAG can `docker exec p3-mc mc ...` without re-aliasing.
   mc:
     image: minio/mc:RELEASE.2024-06-12T14-34-03Z
     container_name: p3-mc
@@ -92,9 +117,29 @@ services:
       tail -f /dev/null"
     mem_limit: 256m
 
+  # ---- observability (Day 6) ------------------------------------------------
+  # The engine PUSHES metrics rather than exposing a scrape endpoint. A Spark
+  # driver is not a long-lived HTTP target from Prometheus's point of view — it
+  # restarts, it moves, and during a recovery drill it is deliberately killed. A
+  # pushed gauge outlives the process that produced it, which is exactly what you
+  # need when the thing being measured is a crash.
+  # ---- OBSERVABILITY: opt-in via a profile -----------------------------------
+  # Day 6 added ~1.1 GB of container limits to a stack that previously fit. On a
+  # small instance that is enough contention to push Kafka's JVM healthcheck past
+  # its timeout, which presents as "p3-kafka is unhealthy" and looks like a broker
+  # fault rather than a resource one.
+  #
+  # So these are opt-in. The drills do not need them — metrics.py writes
+  # logs/metrics.jsonl unconditionally, and that file is the record.
+  #
+  #   docker compose -f infra/docker-compose.yml up -d
+  #       -> core only: kafka, schema-registry, minio, mc
+  #   docker compose -f infra/docker-compose.yml --profile observability up -d
+  #       -> adds pushgateway, prometheus, grafana   (for Block C's screenshots)
   pushgateway:
     image: prom/pushgateway:v1.8.0
     container_name: p3-pushgateway
+    profiles: ["observability"]
     ports:
       - "9091:9091"
     mem_limit: 128m
@@ -102,6 +147,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.52.0
     container_name: p3-prometheus
+    profiles: ["observability"]
     depends_on: [pushgateway]
     ports:
       - "9090:9090"
@@ -112,6 +158,7 @@ services:
   grafana:
     image: grafana/grafana:11.0.0
     container_name: p3-grafana
+    profiles: ["observability"]
     depends_on: [prometheus]
     ports:
       - "3000:3000"          # http://localhost:3000  admin/admin

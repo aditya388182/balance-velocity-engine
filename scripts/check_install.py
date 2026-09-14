@@ -124,6 +124,11 @@ CHECKS = {
         "records Kafka offsets so caught-up is the query's own answer"),
     "scripts/stage6_proof.sh#2": (
         "velocity disabled", "the TTL drill isolates its variable"),
+    "infra/docker-compose.yml": (
+        "start_period: 90s",
+        "Kafka healthcheck start_period + the observability profile"),
+    "scripts/doctor_stack.sh": (
+        "one of the least informative errors", "the stack doctor"),
     "conf/engine_config.yml": (
         "velocity_enabled", "the velocity toggle"),
     # ---- Day 6 ----

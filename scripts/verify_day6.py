@@ -127,7 +127,7 @@ def check_internal_links():
              + glob.glob(str(REPO_ROOT / "docs/*.md")):
         path = REPO_ROOT / f if not str(f).startswith("/") else Path(f)
         if not path.exists():
-            continue
+            continue        # its absence is reported by the section that owns it
         text = path.read_text()
         # strip fenced blocks and inline code first: a doc that TALKS ABOUT markdown
         # links contains link-shaped text that is not a link.
@@ -155,6 +155,8 @@ def check_scripts_referenced_exist():
                + glob.glob(str(REPO_ROOT / "runbooks/*.md"))
                + [str(REPO_ROOT / "README.md")])
     for f in sources:
+        if not Path(f).exists():
+            continue        # its absence is reported by the section that owns it
         text = Path(f).read_text()
         for m in re.findall(r"(?:\./)?(scripts/[a-z_0-9/]+\.(?:py|sh))", text):
             checked.add(m)
@@ -168,8 +170,19 @@ def check_scripts_referenced_exist():
 
 def check_ci_shape():
     section("6. The CI pipeline does what it claims")
-    ci_text = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
-    ci = yaml.safe_load(ci_text)
+    ci_path = REPO_ROOT / ".github/workflows/ci.yml"
+    if not ci_path.exists():
+        fail("CI workflow missing", f"{ci_path.relative_to(REPO_ROOT)} does not exist")
+        print(f"  {DIM}.github is a DOT directory: Finder hides it, and some GUI "
+              f"unzip tools skip it entirely. Extract with `unzip` in a terminal, "
+              f"then confirm with `ls -la .github/workflows/`.{RESET}")
+        return
+    ci_text = ci_path.read_text()
+    try:
+        ci = yaml.safe_load(ci_text)
+    except Exception as exc:
+        fail("CI workflow does not parse", repr(exc))
+        return
     jobs = list(ci["jobs"])
     if len(jobs) >= 4:
         ok(f"{len(jobs)} jobs", ", ".join(jobs))
@@ -223,7 +236,11 @@ def check_runbook_quality():
 
 def check_readme():
     section("8. The README leads with judgment")
-    r = (REPO_ROOT / "README.md").read_text()
+    rp = REPO_ROOT / "README.md"
+    if not rp.exists():
+        fail("README.md missing")
+        return
+    r = rp.read_text()
     idx_why = r.find("Why Spark")
     idx_arch = r.find("## Architecture")
     if 0 < idx_why < idx_arch:
@@ -239,16 +256,17 @@ def check_readme():
 
 
 def main() -> None:
-    print("Project 3 — 6/6 verification (hermetic: no Docker, no Kafka, no JVM)")
+    print("Project 3 — Day 6 verification (hermetic: no Docker, no Kafka, no JVM)")
     print("=" * 74)
-    check_parses()
-    check_compose_wiring()
-    check_metric_references()
-    check_internal_links()
-    check_scripts_referenced_exist()
-    check_ci_shape()
-    check_runbook_quality()
-    check_readme()
+    # Each section is isolated. A verifier that stops at the first missing file
+    # tells you about one problem when it could have told you about all of them.
+    for fn in (check_parses, check_compose_wiring, check_metric_references,
+               check_internal_links, check_scripts_referenced_exist,
+               check_ci_shape, check_runbook_quality, check_readme):
+        try:
+            fn()
+        except Exception as exc:
+            fail(f"section {fn.__name__} raised", repr(exc))
 
     print("\n" + "=" * 74)
     print(f"{GREEN}{len(PASSES)} passed{RESET}   {RED}{len(FAILS)} failed{RESET}")
